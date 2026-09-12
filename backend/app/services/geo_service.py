@@ -31,8 +31,6 @@ ADSB_MIL = "https://api.adsb.lol/v2/mil"
 ADSB_GLOBE = "https://globe.theairtraffic.com/data/aircraft.json"
 FLIGHT_CAP = 800
 SNAPSHOT_INTERVAL = 600
-WEATHER_PLANET_STEP = 20.0
-WEATHER_BATCH = 40
 SNAPSHOT_DIR = Path(__file__).resolve().parents[3] / "data" / "snapshots"
 NE_PLACES = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson"
 NE_PORTS = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_ports.geojson"
@@ -52,6 +50,7 @@ MILITARY_HINTS = (
 )
 RAINVIEWER_MAPS = "https://api.rainviewer.com/public/weather-maps.json"
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+METNO_FORECAST = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 STORM_CODES = {95, 96, 99}
 
 _CATALOGS: dict[str, list[dict]] = {}
@@ -110,7 +109,11 @@ def _load_snapshots_from_disk() -> None:
 
 
 def _get_json(url: str, timeout: float = 20.0, params: dict | None = None) -> Any:
-    with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "PalantirAtHome/0.1"}) as client:
+    with httpx.Client(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"User-Agent": "PalantirAtHome/0.1 (local globe; weather+flights)"},
+    ) as client:
         response = client.get(url, params=params)
         response.raise_for_status()
         return response.json()
@@ -479,88 +482,6 @@ def flights(south: float, west: float, north: float, east: float, zoom: int | No
     return {"items": items, "source": snap.get("source") or "OpenSky"}
 
 
-def _planet_weather_cells() -> tuple[list[dict], dict]:
-    step = WEATHER_PLANET_STEP
-    south, west, north, east = -84.0, -180.0, 84.0, 180.0
-    rows = max(1, int(round((north - south) / step)))
-    cols = max(1, int(round((east - west) / step)))
-    cells = []
-    for row in range(rows):
-        for col in range(cols):
-            cell_south = south + row * step
-            cell_west = west + col * step
-            cells.append(
-                {
-                    "lat": cell_south + step / 2,
-                    "lon": cell_west + step / 2,
-                    "south": cell_south,
-                    "north": cell_south + step,
-                    "west": cell_west,
-                    "east": cell_west + step,
-                    "row": row,
-                    "col": col,
-                }
-            )
-    grid = {
-        "rows": rows,
-        "cols": cols,
-        "south": south,
-        "west": west,
-        "north": south + rows * step,
-        "east": west + cols * step,
-        "dlat": step,
-        "dlon": step,
-    }
-    return cells, grid
-
-
-def _refresh_weather_snapshot() -> None:
-    cells, grid = _planet_weather_cells()
-    items: list[dict] = []
-    for index in range(0, len(cells), WEATHER_BATCH):
-        chunk = cells[index : index + WEATHER_BATCH]
-        raw = None
-        for attempt in range(3):
-            try:
-                raw = _get_json(
-                    OPEN_METEO,
-                    timeout=40.0,
-                    params={
-                        "latitude": ",".join(f"{cell['lat']:.4f}" for cell in chunk),
-                        "longitude": ",".join(f"{cell['lon']:.4f}" for cell in chunk),
-                        "current": "weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m",
-                        "wind_speed_unit": "ms",
-                        "cell_selection": "nearest",
-                    },
-                )
-                break
-            except httpx.HTTPError as exc:
-                log.info("weather batch %s failed: %s", index, exc)
-                time.sleep(8.0 * (attempt + 1))
-        if raw is None:
-            continue
-        rows = raw if isinstance(raw, list) else [raw]
-        for cell, row in zip(chunk, rows, strict=False):
-            current = (row or {}).get("current") or {}
-            code = current.get("weather_code")
-            items.append(
-                {
-                    **cell,
-                    "kind": "weather",
-                    "cloud_cover": current.get("cloud_cover"),
-                    "precipitation": current.get("precipitation"),
-                    "wind_speed": current.get("wind_speed_10m"),
-                    "wind_direction": current.get("wind_direction_10m"),
-                    "weather_code": code,
-                    "storm": code in STORM_CODES,
-                }
-            )
-        time.sleep(2.0)
-    if items:
-        _put_store("weather", {"items": items, "grid": grid, "source": "Open-Meteo"})
-        log.info("weather snapshot %s", len(items))
-
-
 def _refresh_radar_snapshot() -> None:
     data = _load_weather_radar()
     _put_store("radar", {"items": [], **data})
@@ -573,7 +494,6 @@ def refresh_snapshots() -> None:
         ("events", lambda: _put_store("events", _load_events())),
         ("radar", _refresh_radar_snapshot),
         ("flights", _refresh_flights_snapshot),
-        ("weather", _refresh_weather_snapshot),
         ("military", _military_hexes),
     )
     for name, job in jobs:
@@ -788,18 +708,120 @@ def weather_radar() -> dict:
         return {"source": "RainViewer", "rain_url": None, "clouds_url": None, "time": None, "max_zoom": 7}
 
 
+def _parse_metno_cell(raw: dict, cell: dict) -> dict | None:
+    series = ((raw.get("properties") or {}).get("timeseries") or [])
+    if not series:
+        return None
+    data = (series[0].get("data") or {})
+    instant = ((data.get("instant") or {}).get("details")) or {}
+    nxt = data.get("next_1_hours") or data.get("next_6_hours") or {}
+    symbol = str(((nxt.get("summary") or {}).get("symbol_code") or "")).lower()
+    return {
+        **cell,
+        "kind": "weather",
+        "cloud_cover": instant.get("cloud_area_fraction"),
+        "precipitation": (nxt.get("details") or {}).get("precipitation_amount"),
+        "wind_speed": instant.get("wind_speed"),
+        "wind_direction": instant.get("wind_from_direction"),
+        "weather_code": symbol or None,
+        "storm": "thunder" in symbol,
+    }
+
+
+def _weather_from_metno(cells: list[dict], grid: dict) -> dict:
+    stride = max(1, math.ceil(len(cells) / 20))
+    sample = cells[::stride][:20]
+    items: list[dict] = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [
+            pool.submit(
+                _get_json,
+                METNO_FORECAST,
+                12.0,
+                {"lat": f"{cell['lat']:.3f}", "lon": f"{cell['lon']:.3f}"},
+            )
+            for cell in sample
+        ]
+        for cell, future in zip(sample, futures, strict=False):
+            try:
+                item = _parse_metno_cell(future.result(), cell)
+            except httpx.HTTPError:
+                continue
+            if item:
+                items.append(item)
+    return {"items": items, "grid": grid, "source": "MET Norway"}
+
+
+def _weather_stale(key: str) -> dict | None:
+    hit = _CACHE.get(key)
+    if hit:
+        return hit[1]
+    last = _CACHE.get("weather-last")
+    return last[1] if last else None
+
+
 def weather_field(south: float, west: float, north: float, east: float, zoom: int) -> dict:
-    _ = zoom
     south, west, north, east = normalize_weather_bbox(south, west, north, east)
-    snap = _get_store("weather")
-    if not snap:
-        return {"items": [], "source": "Open-Meteo", "reason": "warming"}
-    items = [
-        item
-        for item in snap["items"]
-        if _in_bbox(item["lat"], item["lon"], south, west, north, east)
-    ]
-    return {"items": items, "grid": snap.get("grid") or {}, "source": snap.get("source") or "Open-Meteo"}
+    cells, grid = build_weather_grid(south, west, north, east, zoom)
+    if not cells:
+        return {"items": [], "source": "Open-Meteo", "reason": "empty_grid"}
+
+    key = f"wx:{grid['south']:.0f}:{grid['west']:.0f}:{grid['dlat']:.1f}:{grid['rows']}:{grid['cols']}"
+    now = time.time()
+    hit = _CACHE.get(key)
+    if hit and now - hit[0] < 600:
+        return hit[1]
+
+    fetched_at = _CACHE.get("weather-fetch-at")
+    if fetched_at and now - fetched_at[0] < 12:
+        stale = _weather_stale(key)
+        if stale:
+            return stale
+
+    def load():
+        raw = _get_json(
+            OPEN_METEO,
+            timeout=25.0,
+            params={
+                "latitude": ",".join(f"{cell['lat']:.4f}" for cell in cells),
+                "longitude": ",".join(f"{cell['lon']:.4f}" for cell in cells),
+                "current": "weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m",
+                "wind_speed_unit": "ms",
+                "cell_selection": "nearest",
+            },
+        )
+        rows = raw if isinstance(raw, list) else [raw]
+        items = []
+        for cell, row in zip(cells, rows, strict=False):
+            current = (row or {}).get("current") or {}
+            code = current.get("weather_code")
+            items.append(
+                {
+                    **cell,
+                    "kind": "weather",
+                    "cloud_cover": current.get("cloud_cover"),
+                    "precipitation": current.get("precipitation"),
+                    "wind_speed": current.get("wind_speed_10m"),
+                    "wind_direction": current.get("wind_direction_10m"),
+                    "weather_code": code,
+                    "storm": code in STORM_CODES,
+                }
+            )
+        return {"items": items, "grid": grid, "source": "Open-Meteo"}
+
+    try:
+        value = load()
+    except httpx.HTTPError:
+        value = _weather_from_metno(cells, grid)
+        if not value["items"]:
+            stale = _weather_stale(key)
+            if stale:
+                return stale
+            return {"items": [], "grid": grid, "source": "Open-Meteo", "reason": "feed_unavailable"}
+    _CACHE[key] = (now, value)
+    _CACHE["weather-last"] = (now, value)
+    _CACHE["weather-fetch-at"] = (now, True)
+    return value
 
 
 def imagery_meta(lat: float, lon: float, zoom: int) -> dict:

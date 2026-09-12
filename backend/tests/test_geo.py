@@ -1,3 +1,5 @@
+import httpx
+
 from app.services.geo_service import (
     _CACHE,
     _STORE,
@@ -160,41 +162,83 @@ def test_weather_radar_builds_url(monkeypatch) -> None:
     assert data["clouds_url"] is None
 
 
-def test_weather_field_reads_planet_store() -> None:
-    _STORE.clear()
-    _put_store(
-        "weather",
-        {
-            "items": [
-                {
-                    "lat": 55.0,
-                    "lon": 37.0,
-                    "kind": "weather",
-                    "cloud_cover": 80,
-                    "wind_speed": 5.0,
-                    "storm": False,
-                },
-                {
-                    "lat": -30.0,
-                    "lon": 150.0,
-                    "kind": "weather",
-                    "cloud_cover": 10,
-                    "wind_speed": 2.0,
-                    "storm": False,
-                },
-            ],
-            "grid": {"dlat": 12, "dlon": 12, "rows": 2, "cols": 2},
-            "source": "Open-Meteo",
+def test_weather_field_maps_open_meteo(monkeypatch) -> None:
+    _CACHE.clear()
+    monkeypatch.setattr(
+        "app.services.geo_service._get_json",
+        lambda *args, **kwargs: [
+            {
+                "current": {
+                    "weather_code": 95,
+                    "cloud_cover": 90,
+                    "precipitation": 2.1,
+                    "wind_speed_10m": 8.4,
+                    "wind_direction_10m": 270,
+                }
+            }
+        ]
+        * 24,
+    )
+    data = weather_field(50, 30, 60, 40, zoom=3)
+    assert data["source"] == "Open-Meteo"
+    assert data["items"]
+    assert data["grid"]["dlat"] > 0
+    assert data["items"][0]["storm"] is True
+    assert data["items"][0]["wind_speed"] == 8.4
+
+
+def test_weather_field_falls_back_to_metno(monkeypatch) -> None:
+    _CACHE.clear()
+
+    def fake_get(url, timeout=20.0, params=None):
+        if "open-meteo" in url:
+            request = httpx.Request("GET", url)
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("429", request=request, response=response)
+        return {
+            "properties": {
+                "timeseries": [
+                    {
+                        "data": {
+                            "instant": {
+                                "details": {
+                                    "cloud_area_fraction": 88,
+                                    "wind_speed": 6.2,
+                                    "wind_from_direction": 180,
+                                }
+                            },
+                            "next_1_hours": {
+                                "summary": {"symbol_code": "heavyrainandthunder"},
+                                "details": {"precipitation_amount": 1.4},
+                            },
+                        }
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr("app.services.geo_service._get_json", fake_get)
+    data = weather_field(50, 30, 60, 40, zoom=6)
+    assert data["source"] == "MET Norway"
+    assert data["items"]
+    assert data["items"][0]["cloud_cover"] == 88
+    assert data["items"][0]["storm"] is True
+
+
+def test_weather_field_accepts_world_wrap(monkeypatch) -> None:
+    _CACHE.clear()
+    monkeypatch.setattr(
+        "app.services.geo_service._get_json",
+        lambda *args, **kwargs: {
+            "current": {
+                "weather_code": 3,
+                "cloud_cover": 70,
+                "precipitation": 0.2,
+                "wind_speed_10m": 4.0,
+                "wind_direction_10m": 90,
+            }
         },
     )
-    data = weather_field(50, 30, 60, 40, zoom=6)
-    assert data["source"] == "Open-Meteo"
-    assert len(data["items"]) == 1
-    assert data["items"][0]["lat"] == 55.0
-
-
-def test_weather_field_warming_without_store() -> None:
-    _STORE.clear()
-    data = weather_field(50, 30, 60, 40, zoom=6)
-    assert data["items"] == []
-    assert data["reason"] == "warming"
+    data = weather_field(-85, -220, 85, 220, zoom=2)
+    assert data.get("reason") != "bbox_too_large"
+    assert data["items"]

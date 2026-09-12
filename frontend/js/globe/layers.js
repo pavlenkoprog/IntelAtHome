@@ -122,7 +122,7 @@ export function attachLayers(map) {
   bindLiveLayer(map, events, "events", () => api.geo.events(), 600000);
   bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 600000, 5, 250);
   bindBBoxLayer(map, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
-  bindRadarLayer(map, rain, rainTiles);
+  bindRadarLayer(map, rain, rainTiles, clouds);
   bindWeatherField(map, clouds, storms, wind, rain);
 }
 
@@ -268,12 +268,25 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs 
   timers[key] = window.setInterval(() => refresh("interval"), intervalMs);
 }
 
-function bindRadarLayer(map, overlay, tiles) {
+function bindRadarLayer(map, overlay, tiles, clouds) {
+  let cloudTiles = null;
   const refresh = async () => {
     try {
       const data = await api.geo.weatherRadar();
       if (data.rain_url) {
         tiles.setUrl(data.rain_url);
+      }
+      if (data.clouds_url) {
+        if (!cloudTiles) {
+          cloudTiles = tile(data.clouds_url, "RainViewer", 19, {
+            pane: "weatherPane",
+            opacity: 0.42,
+            maxNativeZoom: 7,
+          });
+          cloudTiles.addTo(clouds);
+        } else {
+          cloudTiles.setUrl(data.clouds_url);
+        }
       }
     } catch (error) {
       console.warn("weather radar", error);
