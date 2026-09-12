@@ -31,7 +31,7 @@ export async function showGlobe() {
     setHud(hud, "Загрузка глобуса…");
     viewer = createViewer(container);
     await attachLayers(viewer, root);
-    attachLooks(root, hud);
+    attachLooks(root, hud, viewer);
     attachCursorMeta(viewer, root);
   } else {
     viewer.useDefaultRenderLoop = true;

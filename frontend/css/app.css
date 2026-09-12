@@ -297,12 +297,16 @@ a {
 }
 
 .look-noir .weather-canvas {
-  filter: grayscale(1) contrast(1.5) brightness(0.88);
+  filter: grayscale(1) contrast(1.45) brightness(0.72);
 }
 
 .look-noir .look-grain,
 .look-noir .look-vignette {
   display: block;
+}
+
+.look-noir .look-vignette {
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.18) 30%, rgba(0, 0, 0, 0.82) 100%);
 }
 
 .look-noir .look-grain {

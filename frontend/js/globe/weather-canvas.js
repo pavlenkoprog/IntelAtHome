@@ -12,6 +12,9 @@ export function createWeatherView(viewer) {
   let layers = { clouds: false, rain: false, wind: false };
   let dirty = true;
   let lastView = "";
+  let cloudLayer = null;
+  let cloudKey = "";
+  let cloudBusy = false;
 
   const Cesium = window.Cesium;
   let project = () => null;
@@ -38,31 +41,164 @@ export function createWeatherView(viewer) {
     };
   };
 
-  const drawClouds = () => {
-    ctx.save();
-    ctx.filter = "blur(6px)";
+  const removeCloudLayer = () => {
+    if (!cloudLayer) {
+      return;
+    }
+    viewer.imageryLayers.remove(cloudLayer, true);
+    cloudLayer = null;
+    cloudKey = "";
+  };
+
+  const rectangleFromGrid = (meta) => {
+    let west = Number(meta.west);
+    let east = Number(meta.east);
+    const south = Number(meta.south);
+    const north = Number(meta.north);
+    if (!Number.isFinite(west) || !Number.isFinite(east) || !Number.isFinite(south) || !Number.isFinite(north)) {
+      return null;
+    }
+    if (east <= west) {
+      east = west + Number(meta.cols || 1) * Number(meta.dlon || 1);
+    }
+    if (east - west >= 359) {
+      return Cesium.Rectangle.MAX_VALUE;
+    }
+    return Cesium.Rectangle.fromDegrees(west, south, Math.min(east, west + 359.9), north);
+  };
+
+  const rasterClouds = (meta) => {
+    const cols = Number(meta.cols) || 0;
+    const rows = Number(meta.rows) || 0;
+    if (cols < 1 || rows < 1) {
+      return null;
+    }
+    const raster = document.createElement("canvas");
+    raster.width = cols;
+    raster.height = rows;
+    const rasterCtx = raster.getContext("2d", { alpha: true });
+    const image = rasterCtx.createImageData(cols, rows);
+    const pixels = image.data;
     for (const cell of field) {
       const cover = Number(cell.cloud_cover) || 0;
-      const t = Math.max(0, (cover - 5) / 95);
+      const t = Math.max(0, (cover - 2) / 98);
       if (t <= 0) {
         continue;
       }
-      const pts = [
-        project(cell.south, cell.west),
-        project(cell.south, cell.east),
-        project(cell.north, cell.east),
-        project(cell.north, cell.west),
-      ];
-      if (pts.some((pt) => !pt)) {
+      const row = Number.isFinite(Number(cell.row)) ? Number(cell.row) : 0;
+      const col = Number.isFinite(Number(cell.col)) ? Number(cell.col) : 0;
+      if (row < 0 || col < 0 || row >= rows || col >= cols) {
         continue;
       }
-      ctx.fillStyle = `rgba(236, 244, 255, ${(0.16 + t * 0.7) * t})`;
+      const idx = ((rows - 1 - row) * cols + col) * 4;
+      pixels[idx] = 236;
+      pixels[idx + 1] = 244;
+      pixels[idx + 2] = 255;
+      pixels[idx + 3] = Math.round(Math.min(0.88, 0.22 + t * 0.72) * 255);
+    }
+    rasterCtx.putImageData(image, 0, 0);
+    const scale = Math.max(8, Math.min(24, Math.round(256 / Math.max(cols, rows))));
+    const out = document.createElement("canvas");
+    out.width = cols * scale;
+    out.height = rows * scale;
+    const outCtx = out.getContext("2d");
+    outCtx.imageSmoothingEnabled = true;
+    outCtx.filter = "blur(1.2px)";
+    outCtx.drawImage(raster, 0, 0, out.width, out.height);
+    return out;
+  };
+
+  const syncCloudLayer = async () => {
+    if (!layers.clouds || !field.length) {
+      removeCloudLayer();
+      return;
+    }
+    const meta = grid && grid.rows && grid.cols ? grid : inferGrid();
+    if (!meta) {
+      return;
+    }
+    const key = `${meta.west}:${meta.south}:${meta.east}:${meta.north}:${meta.cols}x${meta.rows}:${field.length}`;
+    if (key === cloudKey && cloudLayer) {
+      cloudLayer.show = true;
+      return;
+    }
+    if (cloudBusy) {
+      return;
+    }
+    cloudBusy = true;
+    const rectangle = rectangleFromGrid(meta);
+    const image = rasterClouds(meta);
+    if (!rectangle || !image) {
+      cloudBusy = false;
+      return;
+    }
+    try {
+      const url = image.toDataURL("image/png");
+      const provider = Cesium.SingleTileImageryProvider.fromUrl
+        ? await Cesium.SingleTileImageryProvider.fromUrl(url, { rectangle })
+        : new Cesium.SingleTileImageryProvider({
+            url,
+            rectangle,
+            tileWidth: image.width,
+            tileHeight: image.height,
+          });
+      removeCloudLayer();
+      cloudLayer = new Cesium.ImageryLayer(provider);
+      cloudLayer.alpha = 0.82;
+      viewer.imageryLayers.add(cloudLayer);
+      cloudKey = key;
+    } catch (error) {
+      console.warn("cloud imagery", error);
+    } finally {
+      cloudBusy = false;
+    }
+  };
+
+  const inferGrid = () => {
+    if (!field.length) {
+      return null;
+    }
+    if (grid && grid.rows && grid.cols) {
+      return grid;
+    }
+    const souths = [...new Set(field.map((cell) => Number(cell.south)))].sort((a, b) => a - b);
+    const wests = [...new Set(field.map((cell) => Number(cell.west)))].sort((a, b) => a - b);
+    if (!souths.length || !wests.length) {
+      return null;
+    }
+    return {
+      rows: souths.length,
+      cols: wests.length,
+      south: souths[0],
+      west: wests[0],
+      north: souths[souths.length - 1] + (souths.length > 1 ? souths[1] - souths[0] : 2),
+      east: wests[wests.length - 1] + (wests.length > 1 ? wests[1] - wests[0] : 2),
+      dlat: souths.length > 1 ? souths[1] - souths[0] : 2,
+      dlon: wests.length > 1 ? wests[1] - wests[0] : 2,
+    };
+  };
+
+  const drawCloudFallback = () => {
+    if (cloudLayer) {
+      return;
+    }
+    ctx.save();
+    ctx.filter = "blur(8px)";
+    for (const cell of field) {
+      const cover = Number(cell.cloud_cover) || 0;
+      const t = Math.max(0, (cover - 2) / 98);
+      if (t <= 0) {
+        continue;
+      }
+      const center = project(cell.lat, cell.lon);
+      if (!center) {
+        continue;
+      }
+      const corner = project(cell.north, cell.east) || project(cell.south, cell.west);
+      const radius = corner ? Math.max(18, Math.hypot(corner.x - center.x, corner.y - center.y) * 0.9) : 28;
+      ctx.fillStyle = `rgba(236, 244, 255, ${Math.min(0.72, 0.2 + t * 0.6)})`;
       ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      ctx.lineTo(pts[1].x, pts[1].y);
-      ctx.lineTo(pts[2].x, pts[2].y);
-      ctx.lineTo(pts[3].x, pts[3].y);
-      ctx.closePath();
+      ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
@@ -88,11 +224,11 @@ export function createWeatherView(viewer) {
         continue;
       }
       const center = project(cell.lat, cell.lon);
-      const corner = project(cell.north, cell.east);
-      if (!center || !corner) {
+      if (!center) {
         continue;
       }
-      const radius = Math.max(22, Math.hypot(corner.x - center.x, corner.y - center.y) * 0.85);
+      const corner = project(cell.north, cell.east);
+      const radius = corner ? Math.max(22, Math.hypot(corner.x - center.x, corner.y - center.y) * 0.85) : 26;
       const [r, g, b] = rainColor(mm);
       const alpha = Math.min(0.55, 0.18 + mm * 0.12);
       const gradient = ctx.createRadialGradient(center.x, center.y, radius * 0.1, center.x, center.y, radius);
@@ -189,7 +325,10 @@ export function createWeatherView(viewer) {
     bindProject();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (layers.clouds) {
-      drawClouds();
+      void syncCloudLayer();
+      drawCloudFallback();
+    } else {
+      removeCloudLayer();
     }
     if (layers.rain) {
       drawRain();
@@ -218,6 +357,7 @@ export function createWeatherView(viewer) {
     setData(items, nextGrid) {
       field = items || [];
       grid = nextGrid || null;
+      cloudKey = "";
       dirty = true;
     },
     setLayers(next) {
@@ -225,6 +365,7 @@ export function createWeatherView(viewer) {
       dirty = true;
     },
     destroy() {
+      removeCloudLayer();
       canvas.remove();
     },
   };
