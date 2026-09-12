@@ -103,68 +103,88 @@ a {
 }
 
 .globe-canvas {
+  position: relative;
+  overflow: hidden;
   width: 100%;
   height: 100%;
   min-height: calc(100vh - 72px);
   background: #05070c;
 }
 
-.globe-canvas .leaflet-container {
+.weather-canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  background: #05070c;
+  pointer-events: none;
+  z-index: 2;
 }
 
-.leaflet-control-layers {
-  background: rgba(18, 22, 31, 0.92) !important;
+.globe-layers {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 800;
+  display: grid;
+  gap: 4px;
+  min-width: 210px;
+  padding: 10px 12px;
+  background: rgba(18, 22, 31, 0.92);
   color: var(--text);
-  border: 1px solid var(--line) !important;
-  border-radius: 10px !important;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 13px;
 }
 
-.leaflet-control-layers-overlays,
-.leaflet-control-layers-base {
-  margin: 0;
-}
-
-.leaflet-control-layers label {
-  color: var(--text);
-}
-
-.leaflet-bar a {
-  background: rgba(18, 22, 31, 0.92) !important;
-  color: var(--text) !important;
-  border-color: var(--line) !important;
-}
-
-.leaflet-popup-content-wrapper,
-.leaflet-popup-tip {
-  background: var(--panel);
+.globe-layers label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
   color: var(--text);
 }
 
-.leaflet-popup-content a {
-  color: #6cb6ff;
+.globe-layers-sep {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--line);
 }
 
-.leaflet-tooltip {
+.globe-popup,
+.globe-tooltip {
+  position: absolute;
+  z-index: 860;
+  max-width: 280px;
+  padding: 10px 28px 10px 12px;
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  pointer-events: auto;
 }
 
-.plane-marker {
-  background: none !important;
-  border: none !important;
-}
-
-.plane-marker img {
-  display: block;
-  transform-origin: center center;
-}
-
-.weather-canvas {
+.globe-tooltip {
+  z-index: 840;
+  padding: 4px 8px;
   pointer-events: none;
+  white-space: nowrap;
+}
+
+.globe-popup a {
+  color: #6cb6ff;
+}
+
+.globe-popup-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
 }
 
 .storm-marker {
@@ -255,10 +275,7 @@ a {
   border-color: var(--accent);
 }
 
-.look-crt .leaflet-tile-pane,
-.look-crt .leaflet-overlay-pane,
-.look-crt .leaflet-marker-pane,
-.look-crt .leaflet-shadow-pane {
+.look-crt .weather-canvas {
   filter: contrast(1.25) saturate(0.85) hue-rotate(18deg) brightness(1.05);
 }
 
@@ -279,10 +296,7 @@ a {
   box-shadow: inset 2px 0 0 rgba(255, 0, 70, 0.18), inset -2px 0 0 rgba(0, 220, 255, 0.18);
 }
 
-.look-noir .leaflet-tile-pane,
-.look-noir .leaflet-overlay-pane,
-.look-noir .leaflet-marker-pane,
-.look-noir .leaflet-shadow-pane {
+.look-noir .weather-canvas {
   filter: grayscale(1) contrast(1.5) brightness(0.88);
 }
 
@@ -321,6 +335,31 @@ a {
 .cesium-widget canvas {
   width: 100%;
   height: 100%;
+}
+
+.cesium-viewer-toolbar {
+  top: 12px !important;
+  left: 12px !important;
+  right: auto !important;
+}
+
+.cesium-button {
+  background: rgba(18, 22, 31, 0.92) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+.cesium-credit-logoContainer,
+.cesium-credit-expand-link {
+  display: none !important;
+}
+
+.cesium-widget-credits {
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  background: transparent !important;
 }
 
 .topbar {

@@ -1,38 +1,44 @@
+import { globeHomeView } from "./camera.js";
 import { attachCursorMeta } from "./cursor-meta.js";
 import { attachLooks } from "./filters.js";
 import { attachLayers } from "./layers.js";
 
-let map = null;
+const CESIUM_VERSION = "1.124.0";
+const CESIUM_CDNS = [
+  `https://cdn.jsdelivr.net/npm/cesium@${CESIUM_VERSION}/Build/Cesium/`,
+  `https://cdnjs.cloudflare.com/ajax/libs/cesium/${CESIUM_VERSION}/`,
+];
+
+let viewer = null;
 
 export async function showGlobe() {
   const root = document.getElementById("globeRoot");
   const container = document.getElementById("cesiumContainer");
   const hud = document.getElementById("globeHud");
   if (!root || !container) {
-    throw new Error("Нет контейнера карты");
+    throw new Error("Нет контейнера глобуса");
   }
 
   root.hidden = false;
-  await loadLeaflet();
+  await loadCesium();
 
-  if (!window.L) {
-    setHud(hud, "Leaflet не загрузился");
-    throw new Error("Leaflet не загрузился");
+  if (!window.Cesium) {
+    setHud(hud, "Cesium не загрузился");
+    throw new Error("Cesium не загрузился");
   }
 
-  if (!map) {
-    map = window.L.map(container, {
-      worldCopyJump: true,
-      minZoom: 2,
-      zoomControl: true,
-    }).setView([30, 20], 3);
-    attachLayers(map);
+  if (!viewer) {
+    setHud(hud, "Загрузка глобуса…");
+    viewer = createViewer(container);
+    await attachLayers(viewer, root);
     attachLooks(root, hud);
-    attachCursorMeta(map, root);
+    attachCursorMeta(viewer, root);
+  } else {
+    viewer.useDefaultRenderLoop = true;
   }
 
-  requestAnimationFrame(() => map.invalidateSize());
-  setTimeout(() => map.invalidateSize(), 100);
+  requestAnimationFrame(() => viewer.resize());
+  window.setTimeout(() => viewer.resize(), 120);
 }
 
 export function hideGlobe() {
@@ -40,6 +46,79 @@ export function hideGlobe() {
   if (root) {
     root.hidden = true;
   }
+  if (viewer) {
+    viewer.useDefaultRenderLoop = false;
+  }
+}
+
+function createViewer(container) {
+  const Cesium = window.Cesium;
+
+  const viewer = new Cesium.Viewer(container, {
+    animation: false,
+    baseLayerPicker: false,
+    fullscreenButton: false,
+    vrButton: false,
+    geocoder: false,
+    homeButton: true,
+    infoBox: false,
+    sceneModePicker: true,
+    selectionIndicator: false,
+    timeline: false,
+    navigationHelpButton: false,
+    navigationInstructionsInitiallyVisible: false,
+    shouldAnimate: false,
+    baseLayer: false,
+    skyBox: false,
+    terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+  });
+
+  viewer.scene.globe.show = true;
+  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#0b1a28");
+  viewer.scene.globe.baseColor = Cesium.Color.fromBytes(12, 62, 110);
+  viewer.scene.globe.enableLighting = false;
+  viewer.scene.globe.showGroundAtmosphere = true;
+  viewer.scene.globe.depthTestAgainstTerrain = false;
+  viewer.scene.fog.enabled = false;
+  viewer.scene.skyAtmosphere.show = true;
+  viewer.scene.skyAtmosphere.atmosphereLightIntensity = 18;
+  viewer.scene.skyAtmosphere.saturationShift = -0.12;
+  viewer.scene.skyAtmosphere.brightnessShift = -0.08;
+  if (viewer.scene.moon) {
+    viewer.scene.moon.show = false;
+  }
+  if (viewer.scene.sun) {
+    viewer.scene.sun.show = true;
+  }
+
+  const controller = viewer.scene.screenSpaceCameraController;
+  controller.minimumZoomDistance = 200;
+  controller.maximumZoomDistance = 2.2e7;
+  controller.enableCollisionDetection = true;
+
+  viewer.camera.setView(globeHomeView());
+  loadKeylessTerrain(viewer);
+
+  viewer.homeButton.viewModel.command.beforeExecute.addEventListener((event) => {
+    event.cancel = true;
+    viewer.camera.flyTo({ ...globeHomeView(), duration: 1.6 });
+  });
+
+  return viewer;
+}
+
+function loadKeylessTerrain(viewer) {
+  const Cesium = window.Cesium;
+  if (!Cesium.CesiumTerrainProvider?.fromUrl) {
+    return;
+  }
+  Cesium.CesiumTerrainProvider.fromUrl("https://terrain.reearth.land/cesium-mesh/ellipsoid")
+    .then((provider) => {
+      viewer.terrainProvider = provider;
+    })
+    .catch(() => {
+      /* остаёмся на эллипсоиде */
+    });
 }
 
 function setHud(hud, text) {
@@ -48,13 +127,24 @@ function setHud(hud, text) {
   }
 }
 
-function loadLeaflet() {
-  if (window.L) {
-    return Promise.resolve();
+async function loadCesium() {
+  if (window.Cesium) {
+    return;
   }
-
-  loadCss("/vendor/leaflet/leaflet.css");
-  return loadScript("/vendor/leaflet/leaflet.js");
+  let lastError;
+  for (const base of CESIUM_CDNS) {
+    try {
+      window.CESIUM_BASE_URL = base;
+      loadCss(`${base}Widgets/widgets.css`);
+      await loadScript(`${base}Cesium.js`);
+      if (window.Cesium) {
+        return;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Cesium не загрузился");
 }
 
 function loadCss(href) {
@@ -71,6 +161,10 @@ function loadScript(src) {
   return new Promise((resolve, reject) => {
     const existing = document.querySelector(`script[src="${src}"]`);
     if (existing) {
+      if (window.Cesium) {
+        resolve();
+        return;
+      }
       existing.addEventListener("load", () => resolve());
       existing.addEventListener("error", () => reject(new Error(`Не загрузился ${src}`)));
       return;

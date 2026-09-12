@@ -1,93 +1,70 @@
-export function createWeatherView(map) {
+import { cameraZoom, pickLatLng } from "./camera.js";
+
+export function createWeatherView(viewer) {
   const canvas = document.createElement("canvas");
   canvas.className = "weather-canvas";
-  const pane = map.getPane("weatherOverlayPane") || map.getPanes().overlayPane;
-  pane.appendChild(canvas);
+  const parent = viewer.canvas.parentElement || viewer.container;
+  parent.appendChild(canvas);
   const ctx = canvas.getContext("2d", { alpha: true });
 
   let field = [];
   let grid = null;
   let layers = { clouds: false, rain: false, wind: false };
-  const raster = document.createElement("canvas");
-  const rasterCtx = raster.getContext("2d", { alpha: true });
+  let dirty = true;
+  let lastView = "";
+
+  const Cesium = window.Cesium;
+  let project = () => null;
 
   const syncBox = () => {
-    const size = map.getSize();
-    if (canvas.width !== size.x || canvas.height !== size.y) {
-      canvas.width = size.x;
-      canvas.height = size.y;
+    const width = viewer.canvas.clientWidth;
+    const height = viewer.canvas.clientHeight;
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
     }
-    const topLeft = map.containerPointToLayerPoint([0, 0]);
-    window.L.DomUtil.setPosition(canvas, topLeft);
   };
 
-  const gridMeta = () => {
-    if (grid && grid.rows && grid.cols && grid.dlat && grid.dlon) {
-      return grid;
-    }
-    if (!field.length) {
-      return null;
-    }
-    const souths = [...new Set(field.map((cell) => Number(cell.south)))].sort((a, b) => a - b);
-    const wests = [...new Set(field.map((cell) => Number(cell.west)))].sort((a, b) => a - b);
-    if (!souths.length || !wests.length) {
-      return null;
-    }
-    return {
-      rows: souths.length,
-      cols: wests.length,
-      south: souths[0],
-      west: wests[0],
-      dlat: souths.length > 1 ? souths[1] - souths[0] : Number(field[0].north) - Number(field[0].south),
-      dlon: wests.length > 1 ? wests[1] - wests[0] : Number(field[0].east) - Number(field[0].west),
+  const bindProject = () => {
+    const occluder = new Cesium.EllipsoidalOccluder(viewer.scene.globe.ellipsoid, viewer.camera.positionWC);
+    project = (lat, lon) => {
+      const cartesian = Cesium.Cartesian3.fromDegrees(lon, lat);
+      if (!occluder.isPointVisible(cartesian)) {
+        return null;
+      }
+      return Cesium.SceneTransforms.worldToWindowCoordinates
+        ? Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, cartesian)
+        : Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, cartesian);
     };
   };
 
   const drawClouds = () => {
-    const meta = gridMeta();
-    if (!meta || !field.length) {
-      return;
-    }
-    const { rows, cols, south, west, dlat, dlon } = meta;
-    if (raster.width !== cols || raster.height !== rows) {
-      raster.width = cols;
-      raster.height = rows;
-    }
-    const image = rasterCtx.createImageData(cols, rows);
-    const pixels = image.data;
-    for (let i = 0; i < field.length; i += 1) {
-      const cell = field[i];
-      const row = Number.isFinite(Number(cell.row)) ? Number(cell.row) : Math.floor(i / cols);
-      const col = Number.isFinite(Number(cell.col)) ? Number(cell.col) : i % cols;
-      if (row < 0 || col < 0 || row >= rows || col >= cols) {
-        continue;
-      }
+    ctx.save();
+    ctx.filter = "blur(6px)";
+    for (const cell of field) {
       const cover = Number(cell.cloud_cover) || 0;
       const t = Math.max(0, (cover - 5) / 95);
       if (t <= 0) {
         continue;
       }
-      const idx = ((rows - 1 - row) * cols + col) * 4;
-      pixels[idx] = 236;
-      pixels[idx + 1] = 244;
-      pixels[idx + 2] = 255;
-      pixels[idx + 3] = Math.round((0.16 + t * 0.7) * t * 255);
+      const pts = [
+        project(cell.south, cell.west),
+        project(cell.south, cell.east),
+        project(cell.north, cell.east),
+        project(cell.north, cell.west),
+      ];
+      if (pts.some((pt) => !pt)) {
+        continue;
+      }
+      ctx.fillStyle = `rgba(236, 244, 255, ${(0.16 + t * 0.7) * t})`;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      ctx.lineTo(pts[1].x, pts[1].y);
+      ctx.lineTo(pts[2].x, pts[2].y);
+      ctx.lineTo(pts[3].x, pts[3].y);
+      ctx.closePath();
+      ctx.fill();
     }
-    rasterCtx.putImageData(image, 0, 0);
-    const sw = map.latLngToContainerPoint([south, west]);
-    const ne = map.latLngToContainerPoint([south + rows * dlat, west + cols * dlon]);
-    const x = Math.min(sw.x, ne.x);
-    const y = Math.min(sw.y, ne.y);
-    const width = Math.abs(ne.x - sw.x);
-    const height = Math.abs(ne.y - sw.y);
-    if (width < 2 || height < 2) {
-      return;
-    }
-    ctx.save();
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.filter = "blur(6px)";
-    ctx.drawImage(raster, x, y, width, height);
     ctx.restore();
   };
 
@@ -110,8 +87,11 @@ export function createWeatherView(map) {
       if (mm <= 0) {
         continue;
       }
-      const center = map.latLngToContainerPoint([cell.lat, cell.lon]);
-      const corner = map.latLngToContainerPoint([cell.north, cell.east]);
+      const center = project(cell.lat, cell.lon);
+      const corner = project(cell.north, cell.east);
+      if (!center || !corner) {
+        continue;
+      }
       const radius = Math.max(22, Math.hypot(corner.x - center.x, corner.y - center.y) * 0.85);
       const [r, g, b] = rainColor(mm);
       const alpha = Math.min(0.55, 0.18 + mm * 0.12);
@@ -167,17 +147,19 @@ export function createWeatherView(map) {
     if (!field.length) {
       return;
     }
-    const size = map.getSize();
-    const gap = Math.max(22, 36 - map.getZoom());
+    const gap = Math.max(22, 36 - cameraZoom(viewer));
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.strokeStyle = "rgba(220, 236, 255, 0.42)";
     ctx.lineWidth = 1.15;
-    for (let y = gap / 2; y < size.y; y += gap) {
-      for (let x = gap / 2; x < size.x; x += gap) {
-        const latlng = map.containerPointToLatLng([x, y]);
-        const wind = windAt(latlng.lat, latlng.lng);
+    for (let y = gap / 2; y < canvas.height; y += gap) {
+      for (let x = gap / 2; x < canvas.width; x += gap) {
+        const latlng = pickLatLng(viewer, new Cesium.Cartesian2(x, y));
+        if (!latlng) {
+          continue;
+        }
+        const wind = windAt(latlng.lat, latlng.lon);
         if (!wind) {
           continue;
         }
@@ -204,6 +186,7 @@ export function createWeatherView(map) {
 
   const draw = () => {
     syncBox();
+    bindProject();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (layers.clouds) {
       drawClouds();
@@ -216,20 +199,32 @@ export function createWeatherView(map) {
     }
   };
 
-  map.on("move resize zoom", draw);
+  const viewKey = () => {
+    const camera = viewer.camera;
+    return `${camera.positionWC.x | 0}:${camera.positionWC.y | 0}:${camera.positionWC.z | 0}:${camera.heading.toFixed(3)}:${camera.pitch.toFixed(3)}:${canvas.width}x${canvas.height}`;
+  };
+
+  viewer.scene.postRender.addEventListener(() => {
+    const key = viewKey();
+    if (!dirty && key === lastView) {
+      return;
+    }
+    lastView = key;
+    dirty = false;
+    draw();
+  });
 
   return {
     setData(items, nextGrid) {
       field = items || [];
       grid = nextGrid || null;
-      draw();
+      dirty = true;
     },
     setLayers(next) {
       layers = { ...layers, ...next };
-      draw();
+      dirty = true;
     },
     destroy() {
-      map.off("move resize zoom", draw);
       canvas.remove();
     },
   };

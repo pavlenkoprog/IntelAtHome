@@ -1,9 +1,10 @@
 import { api } from "../api.js";
+import { cameraZoom, pickLatLng } from "./camera.js";
 
 const ESRI_META =
   "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/4/query";
 
-export function attachCursorMeta(map, root) {
+export function attachCursorMeta(viewer, root) {
   let chip = document.getElementById("cursorMeta");
   if (!chip) {
     chip = document.createElement("div");
@@ -16,6 +17,7 @@ export function attachCursorMeta(map, root) {
   let timer = 0;
   let requestId = 0;
   let lastKey = "";
+  const Cesium = window.Cesium;
 
   const moveChip = (event) => {
     const bounds = root.getBoundingClientRect();
@@ -25,15 +27,15 @@ export function attachCursorMeta(map, root) {
   };
 
   const loadMeta = async (latlng) => {
-    const zoom = Math.round(map.getZoom());
-    const key = `${latlng.lat.toFixed(3)}:${latlng.lng.toFixed(3)}:${zoom}`;
+    const zoom = Math.round(cameraZoom(viewer));
+    const key = `${latlng.lat.toFixed(3)}:${latlng.lon.toFixed(3)}:${zoom}`;
     if (key === lastKey) {
       return;
     }
     lastKey = key;
     const id = ++requestId;
     try {
-      const data = await fetchImageryMeta(latlng.lat, latlng.lng, zoom);
+      const data = await fetchImageryMeta(latlng.lat, latlng.lon, zoom);
       if (id !== requestId) {
         return;
       }
@@ -45,12 +47,20 @@ export function attachCursorMeta(map, root) {
     }
   };
 
-  map.on("mousemove", (event) => {
-    moveChip(event.originalEvent);
+  const canvas = viewer.scene.canvas;
+  canvas.addEventListener("mousemove", (event) => {
+    const bounds = canvas.getBoundingClientRect();
+    const windowPos = new Cesium.Cartesian2(event.clientX - bounds.left, event.clientY - bounds.top);
+    const latlng = pickLatLng(viewer, windowPos);
+    moveChip(event);
+    if (!latlng) {
+      chip.textContent = "космос";
+      return;
+    }
     window.clearTimeout(timer);
-    timer = window.setTimeout(() => loadMeta(event.latlng), 140);
+    timer = window.setTimeout(() => loadMeta(latlng), 140);
   });
-  map.on("mouseout", () => {
+  canvas.addEventListener("mouseleave", () => {
     chip.hidden = true;
   });
 }

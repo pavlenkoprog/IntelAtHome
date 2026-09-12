@@ -1,13 +1,14 @@
 import { api } from "../api.js";
+import { cameraZoom, viewBBox } from "./camera.js";
 import { createWeatherView } from "./weather-canvas.js";
 
 const ESRI_IMAGERY =
-  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+  "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer";
 const ESRI_LABELS =
-  "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}";
+  "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer";
 const ESRI_ROADS =
-  "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}";
-const OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+  "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer";
+const OSM_TILES = "https://tile.openstreetmap.org/";
 const PLANE_CIVIL = "/vendor/leaflet/images/plane_w.png";
 const PLANE_MILITARY = "/vendor/leaflet/images/plane_r.png";
 const PLANE_SIZE_BASE = 12;
@@ -53,112 +54,215 @@ const KIND_LABELS = {
 
 const timers = {};
 
-export function attachLayers(map) {
-  map.createPane("weatherPane");
-  map.getPane("weatherPane").style.zIndex = 520;
-  map.createPane("weatherOverlayPane");
-  map.getPane("weatherOverlayPane").style.zIndex = 530;
-  map.createPane("weatherMarkerPane");
-  map.getPane("weatherMarkerPane").style.zIndex = 640;
-  map.createPane("roadsPane");
-  map.getPane("roadsPane").style.zIndex = 350;
-  map.createPane("labelsPane");
-  map.getPane("labelsPane").style.zIndex = 450;
+export async function attachLayers(viewer, root) {
+  viewer.scene.globe.show = true;
+  const imagery = await addArcGisLayer(viewer, ESRI_IMAGERY, { credit: "Esri World Imagery" });
+  const streets = addOsmLayer(viewer, { show: false });
+  const roads = await addArcGisLayer(viewer, ESRI_ROADS, { credit: "Esri Transportation", alpha: 0.75 });
+  const labels = await addArcGisLayer(viewer, ESRI_LABELS, { credit: "Esri Boundaries & Places" });
+  const rain = {
+    layer: addTiles(viewer, "https://tilecache.rainviewer.com/v2/radar/0/256/{z}/{x}/{y}/2/1_1.png", {
+      credit: "RainViewer",
+      maximumLevel: 7,
+      alpha: 0.78,
+    }),
+    show: true,
+  };
+  const clouds = { layer: null, show: true };
 
-  const imagery = tile(ESRI_IMAGERY, "Esri World Imagery", 17);
-  const streets = tile(OSM_TILES, "© OpenStreetMap", 19);
-  const roads = tile(ESRI_ROADS, "Esri Transportation", 17, { pane: "roadsPane", opacity: 0.75 });
-  const labels = tile(ESRI_LABELS, "Esri Boundaries & Places", 17, { pane: "labelsPane" });
+  const quakes = addSource(viewer, "quakes");
+  const events = addSource(viewer, "events");
+  const flights = addSource(viewer, "flights");
+  const places = addSource(viewer, "places");
+  const storms = addSource(viewer, "storms");
 
-  const quakes = window.L.layerGroup();
-  const events = window.L.layerGroup();
-  const flights = window.L.layerGroup();
-  const places = window.L.layerGroup();
-  const rainTiles = tile("https://tilecache.rainviewer.com/v2/radar/0/256/{z}/{x}/{y}/2/1_1.png", "RainViewer", 19, {
-    pane: "weatherPane",
-    opacity: 0.78,
-    maxNativeZoom: 7,
+  const overlays = {
+    labels,
+    roads,
+    places,
+    quakes,
+    events,
+    flights,
+    rain,
+    clouds,
+    storms,
+    wind: { show: true },
+  };
+
+  attachLayerControl(root, { imagery, streets }, overlays);
+  attachPicking(viewer, root);
+
+  bindLiveLayer(viewer, quakes, "quakes", () => api.geo.earthquakes(), 600000);
+  bindLiveLayer(viewer, events, "events", () => api.geo.events(), 600000);
+  bindBBoxLayer(viewer, flights, "flights", (bbox) => api.geo.flights(bbox), 600000, 5, 250);
+  bindBBoxLayer(viewer, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
+  bindRadarLayer(viewer, rain, clouds);
+  bindWeatherField(viewer, overlays);
+}
+
+function addProviderLayer(viewer, provider, options = {}) {
+  const Cesium = window.Cesium;
+  const layer = new Cesium.ImageryLayer(provider);
+  layer.alpha = options.alpha ?? 1;
+  layer.show = options.show ?? true;
+  if (options.index == null) {
+    viewer.imageryLayers.add(layer);
+  } else {
+    viewer.imageryLayers.add(layer, options.index);
+  }
+  return layer;
+}
+
+async function addArcGisLayer(viewer, url, options = {}) {
+  const Cesium = window.Cesium;
+  try {
+    if (!Cesium.ArcGisMapServerImageryProvider?.fromUrl) {
+      throw new Error("no ArcGIS provider");
+    }
+    const provider = await Cesium.ArcGisMapServerImageryProvider.fromUrl(url, {
+      enablePickFeatures: false,
+    });
+    return addProviderLayer(viewer, provider, options);
+  } catch (error) {
+    console.warn("ArcGIS imagery unavailable", url, error);
+    if (url === ESRI_IMAGERY) {
+      return addOsmLayer(viewer, options);
+    }
+    return { show: false };
+  }
+}
+
+function addOsmLayer(viewer, options = {}) {
+  const Cesium = window.Cesium;
+  const provider = new Cesium.OpenStreetMapImageryProvider({
+    url: OSM_TILES,
+    credit: options.credit || "© OpenStreetMap",
   });
-  const rain = window.L.layerGroup([rainTiles]);
-  const clouds = window.L.layerGroup();
-  const storms = window.L.layerGroup();
-  const wind = window.L.layerGroup();
-
-  imagery.addTo(map);
-  roads.addTo(map);
-  labels.addTo(map);
-  quakes.addTo(map);
-  events.addTo(map);
-  places.addTo(map);
-  flights.addTo(map);
-  rain.addTo(map);
-  clouds.addTo(map);
-  storms.addTo(map);
-  wind.addTo(map);
-
-  window.L.control
-    .layers(
-      {
-        Спутник: imagery,
-        Схема: streets,
-      },
-      {
-        "Города и границы": labels,
-        Дороги: roads,
-        "Объекты OSM": places,
-        Землетрясения: quakes,
-        "События NASA": events,
-        Самолёты: flights,
-        Осадки: rain,
-        Облачность: clouds,
-        Грозы: storms,
-        Ветер: wind,
-      },
-      { collapsed: false, position: "topright" },
-    )
-    .addTo(map);
-
-  bindLiveLayer(map, quakes, "quakes", () => api.geo.earthquakes(), 600000);
-  bindLiveLayer(map, events, "events", () => api.geo.events(), 600000);
-  bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 600000, 5, 250);
-  bindBBoxLayer(map, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
-  bindRadarLayer(map, rain, rainTiles, clouds);
-  bindWeatherField(map, clouds, storms, wind, rain);
+  return addProviderLayer(viewer, provider, options);
 }
 
-function tile(url, attribution, maxZoom, extra = {}) {
-  return window.L.tileLayer(url, { maxZoom, attribution, ...extra });
+function addTiles(viewer, url, options = {}) {
+  const Cesium = window.Cesium;
+  return addProviderLayer(
+    viewer,
+    new Cesium.UrlTemplateImageryProvider({
+      enablePickFeatures: false,
+      url,
+      maximumLevel: options.maximumLevel ?? 17,
+      credit: options.credit || "",
+    }),
+    options,
+  );
 }
 
-function bindLiveLayer(map, layer, key, loader, intervalMs) {
+function addSource(viewer, name) {
+  const source = new window.Cesium.CustomDataSource(name);
+  source.show = true;
+  viewer.dataSources.add(source);
+  return source;
+}
+
+function attachLayerControl(root, bases, overlays) {
+  let panel = document.getElementById("globeLayers");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "globeLayers";
+    panel.className = "globe-layers";
+    root.appendChild(panel);
+  }
+
+  const overlayItems = [
+    ["labels", "Города и границы"],
+    ["roads", "Дороги"],
+    ["places", "Объекты OSM"],
+    ["quakes", "Землетрясения"],
+    ["events", "События NASA"],
+    ["flights", "Самолёты"],
+    ["rain", "Осадки"],
+    ["clouds", "Облачность"],
+    ["storms", "Грозы"],
+    ["wind", "Ветер"],
+  ];
+
+  panel.innerHTML = `
+    <label><input type="radio" name="globe-base" value="imagery" checked> Спутник</label>
+    <label><input type="radio" name="globe-base" value="streets"> Схема</label>
+    <div class="globe-layers-sep"></div>
+    ${overlayItems
+      .map(
+        ([key, label]) =>
+          `<label><input type="checkbox" data-overlay="${key}" ${overlayOn(overlays[key]) ? "checked" : ""}> ${label}</label>`,
+      )
+      .join("")}
+  `;
+
+  panel.querySelectorAll('input[name="globe-base"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (!input.checked) {
+        return;
+      }
+      const satellite = input.value === "imagery";
+      bases.imagery.show = satellite;
+      bases.streets.show = !satellite;
+    });
+  });
+
+  panel.querySelectorAll("input[data-overlay]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const key = input.dataset.overlay;
+      setOverlayShow(overlays[key], input.checked);
+      overlays._onChange?.(key, input.checked);
+    });
+  });
+}
+
+function overlayOn(overlay) {
+  if (!overlay) {
+    return false;
+  }
+  if (overlay.layer) {
+    return overlay.layer.show;
+  }
+  return overlay.show !== false;
+}
+
+function setOverlayShow(overlay, show) {
+  if (!overlay) {
+    return;
+  }
+  overlay.show = show;
+  if (overlay.layer) {
+    overlay.layer.show = show;
+  }
+}
+
+function bindLiveLayer(viewer, source, key, loader, intervalMs) {
   const refresh = async () => {
-    if (!map.hasLayer(layer)) {
+    if (!source.show) {
       return;
     }
     try {
       const data = await loader();
-      renderItems(layer, data.items || [], map);
+      renderItems(source, data.items || [], cameraZoom(viewer));
     } catch {
       /* слой остаётся прежним */
     }
   };
 
-  map.on("overlayadd", (event) => {
-    if (event.layer === layer) {
-      refresh();
-      timers[key] = window.setInterval(refresh, intervalMs);
-    }
-  });
-  map.on("overlayremove", (event) => {
-    if (event.layer === layer && timers[key]) {
+  source.onShow = () => {
+    refresh();
+    timers[key] = window.setInterval(refresh, intervalMs);
+  };
+  source.onHide = () => {
+    if (timers[key]) {
       window.clearInterval(timers[key]);
     }
-  });
+  };
   refresh();
   timers[key] = window.setInterval(refresh, intervalMs);
 }
 
-function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs = 750) {
+function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounceMs = 750) {
   let debounce = 0;
   let requestId = 0;
   let inflight = false;
@@ -174,30 +278,23 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs 
       }
       return;
     }
-    const zoom = map.getZoom();
-    if (!map.hasLayer(layer) || zoom < minZoom) {
+    const zoom = cameraZoom(viewer);
+    if (!source.show || zoom < minZoom) {
       if (debug) {
-        console.log(`[flights] skip ${reason}`, { zoom, minZoom, layerOn: map.hasLayer(layer) });
+        console.log(`[flights] skip ${reason}`, { zoom, minZoom, layerOn: source.show });
       }
       if (zoom < minZoom) {
-        layer.clearLayers();
+        source.entities.removeAll();
       }
       return;
     }
-    const bounds = map.getBounds();
-    const bbox = {
-      south: String(bounds.getSouth()),
-      west: String(bounds.getWest()),
-      north: String(bounds.getNorth()),
-      east: String(bounds.getEast()),
-      zoom: String(Math.round(zoom)),
-    };
     if (reason === "interval" && Date.now() - lastOk < 8000) {
       if (debug) {
         console.log("[flights] skip interval, just loaded");
       }
       return;
     }
+    const bbox = viewBBox(viewer);
     const id = ++requestId;
     if (debug) {
       console.log(`[flights] request ${reason}`, { id, zoom, bbox });
@@ -205,6 +302,9 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs 
     inflight = true;
     try {
       const data = await loader(bbox);
+      if (id !== requestId) {
+        return;
+      }
       if (data.reason && !(data.items || []).length) {
         if (debug) {
           console.log(`[flights] empty ${reason}`, { id, source: data.source, reason: data.reason });
@@ -216,14 +316,14 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs 
       }
       retry = 0;
       const items = data.items || [];
-      renderItems(layer, items, map);
+      renderItems(source, items, zoom);
       lastOk = Date.now();
       if (debug) {
         console.log(`[flights] loaded ${reason}`, {
           id,
           count: items.length,
           source: data.source,
-          markers: layer.getLayers().length,
+          markers: source.entities.values.length,
         });
       }
     } catch (error) {
@@ -249,77 +349,87 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs 
     debounce = window.setTimeout(() => refresh(reason), debounceMs);
   };
 
-  map.on("moveend", () => schedule("moveend"));
-  map.on("overlayadd", (event) => {
-    if (event.layer === layer) {
-      refresh("overlayadd");
-      timers[key] = window.setInterval(() => refresh("interval"), intervalMs);
-    }
-  });
-  map.on("overlayremove", (event) => {
-    if (event.layer === layer && timers[key]) {
+  viewer.camera.moveEnd.addEventListener(() => schedule("moveend"));
+  if (viewer.scene.morphComplete) {
+    viewer.scene.morphComplete.addEventListener(() => schedule("morph"));
+  }
+  source.onShow = () => {
+    refresh("overlayadd");
+    timers[key] = window.setInterval(() => refresh("interval"), intervalMs);
+  };
+  source.onHide = () => {
+    if (timers[key]) {
       window.clearInterval(timers[key]);
-      if (debug) {
-        console.log("[flights] layer off");
-      }
     }
-  });
+    if (debug) {
+      console.log("[flights] layer off");
+    }
+  };
   refresh("init");
   timers[key] = window.setInterval(() => refresh("interval"), intervalMs);
 }
 
-function bindRadarLayer(map, overlay, tiles, clouds) {
-  let cloudTiles = null;
+function bindRadarLayer(viewer, rain, clouds) {
   const refresh = async () => {
     try {
       const data = await api.geo.weatherRadar();
       if (data.rain_url) {
-        tiles.setUrl(data.rain_url);
+        rain.layer = replaceOverlay(viewer, rain.layer, data.rain_url, {
+          credit: "RainViewer",
+          maximumLevel: 7,
+          alpha: 0.78,
+          show: rain.show !== false,
+        });
       }
       if (data.clouds_url) {
-        if (!cloudTiles) {
-          cloudTiles = tile(data.clouds_url, "RainViewer", 19, {
-            pane: "weatherPane",
-            opacity: 0.42,
-            maxNativeZoom: 7,
-          });
-          cloudTiles.addTo(clouds);
-        } else {
-          cloudTiles.setUrl(data.clouds_url);
-        }
+        clouds.layer = replaceOverlay(viewer, clouds.layer, data.clouds_url, {
+          credit: "RainViewer",
+          maximumLevel: 7,
+          alpha: 0.42,
+          show: clouds.show !== false,
+        });
       }
     } catch (error) {
       console.warn("weather radar", error);
     }
   };
 
-  map.on("overlayadd", (event) => {
-    if (event.layer === overlay) {
-      refresh();
-      timers.rain = window.setInterval(refresh, 180000);
-    }
-  });
-  map.on("overlayremove", (event) => {
-    if (event.layer === overlay && timers.rain) {
+  rain.onShow = () => {
+    refresh();
+    timers.rain = window.setInterval(refresh, 180000);
+  };
+  rain.onHide = () => {
+    if (timers.rain) {
       window.clearInterval(timers.rain);
     }
-  });
+  };
   refresh();
-  if (map.hasLayer(overlay)) {
+  if (rain.show) {
     timers.rain = window.setInterval(refresh, 180000);
   }
 }
 
-function bindWeatherField(map, clouds, storms, wind, rain) {
+function replaceOverlay(viewer, layer, url, options) {
+  const index = layer ? viewer.imageryLayers.indexOf(layer) : undefined;
+  if (layer) {
+    viewer.imageryLayers.remove(layer, true);
+  }
+  return addTiles(viewer, url, {
+    ...options,
+    index: index != null && index >= 0 ? index : undefined,
+  });
+}
+
+function bindWeatherField(viewer, overlays) {
   let debounce = 0;
   let requestId = 0;
   let inflight = false;
   let pending = false;
   let lastBBox = null;
-  const fieldOverlays = [clouds, storms, wind];
-  const overlays = [clouds, storms, wind, rain];
-  const view = createWeatherView(map);
-  const anyOn = () => fieldOverlays.some((layer) => map.hasLayer(layer));
+  const fieldKeys = ["clouds", "storms", "wind"];
+  const weatherKeys = ["clouds", "storms", "wind", "rain"];
+  const view = createWeatherView(viewer);
+  const anyOn = () => fieldKeys.some((key) => overlayOn(overlays[key]));
   const smallMove = (bbox) => {
     if (!lastBBox || lastBBox.zoom !== bbox.zoom) {
       return false;
@@ -333,28 +443,22 @@ function bindWeatherField(map, clouds, storms, wind, rain) {
   };
   const syncEnabled = () => {
     view.setLayers({
-      clouds: map.hasLayer(clouds),
-      rain: map.hasLayer(rain),
-      wind: map.hasLayer(wind),
+      clouds: overlayOn(overlays.clouds),
+      rain: overlayOn(overlays.rain),
+      wind: overlayOn(overlays.wind),
     });
   };
   const refresh = async () => {
     if (!anyOn()) {
       view.setData([]);
+      overlays.storms.entities.removeAll();
       return;
     }
     if (inflight) {
       pending = true;
       return;
     }
-    const bounds = map.getBounds();
-    const bbox = {
-      south: String(bounds.getSouth()),
-      west: String(bounds.getWest()),
-      north: String(bounds.getNorth()),
-      east: String(bounds.getEast()),
-      zoom: String(Math.round(map.getZoom())),
-    };
+    const bbox = viewBBox(viewer);
     if (smallMove(bbox)) {
       return;
     }
@@ -372,7 +476,7 @@ function bindWeatherField(map, clouds, storms, wind, rain) {
       view.setData(items, data.grid);
       lastBBox = bbox;
       syncEnabled();
-      renderStorms(storms, items);
+      renderStorms(overlays.storms, items);
     } catch (error) {
       console.warn("weather field", error);
     } finally {
@@ -398,54 +502,72 @@ function bindWeatherField(map, clouds, storms, wind, rain) {
     }
   };
 
-  map.on("moveend", () => {
+  viewer.camera.moveEnd.addEventListener(() => {
     if (anyOn()) {
       schedule();
     }
   });
-  map.on("resize", () => {
-    if (anyOn()) {
-      schedule();
-    }
-  });
-  map.on("overlayadd", (event) => {
-    if (overlays.includes(event.layer)) {
+  if (viewer.scene.morphComplete) {
+    viewer.scene.morphComplete.addEventListener(() => {
+      if (anyOn()) {
+        schedule();
+      }
+    });
+  }
+
+  overlays._onChange = (key) => {
+    if (weatherKeys.includes(key)) {
       syncEnabled();
       syncTimer();
     }
-  });
-  map.on("overlayremove", (event) => {
-    if (overlays.includes(event.layer)) {
-      syncEnabled();
-      syncTimer();
+    const overlay = overlays[key];
+    if (overlay?.onShow && overlayOn(overlay)) {
+      overlay.onShow();
     }
-  });
+    if (overlay?.onHide && !overlayOn(overlay)) {
+      overlay.onHide();
+    }
+  };
+
   syncEnabled();
   syncTimer();
 }
 
-function renderStorms(layer, items) {
-  layer.clearLayers();
+function renderStorms(source, items) {
+  source.entities.removeAll();
+  const Cesium = window.Cesium;
+  const image = boltIcon();
   for (const item of items) {
     if (!item.storm) {
       continue;
     }
-    const icon = window.L.divIcon({
-      className: "storm-marker",
-      iconSize: [22, 28],
-      iconAnchor: [11, 14],
-      html: `<span class="storm-bolt">↯</span>`,
+    source.entities.add({
+      name: stormLabel(item.weather_code),
+      description: weatherPopup(item, "Гроза"),
+      position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 4000),
+      billboard: {
+        image,
+        width: 22,
+        height: 28,
+        disableDepthTestDistance: 40000,
+      },
     });
-    const marker = window.L.marker([item.lat, item.lon], {
-      icon,
-      keyboard: false,
-      pane: "weatherMarkerPane",
-      zIndexOffset: 400,
-    });
-    marker.bindPopup(weatherPopup(item, "Гроза"));
-    marker.bindTooltip(stormLabel(item.weather_code), { direction: "top", opacity: 0.9 });
-    marker.addTo(layer);
   }
+}
+
+function boltIcon() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 44;
+  canvas.height = 56;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ff4d4d";
+  ctx.shadowColor = "#ff2a2a";
+  ctx.shadowBlur = 12;
+  ctx.font = "40px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("↯", 22, 28);
+  return canvas;
 }
 
 function stormLabel(code) {
@@ -461,7 +583,7 @@ function stormLabel(code) {
 function weatherPopup(item, title) {
   const rows = Object.entries({
     Явление: title === "Гроза" ? stormLabel(item.weather_code) : title,
-    "Облачность": item.cloud_cover != null ? `${item.cloud_cover}%` : "",
+    Облачность: item.cloud_cover != null ? `${item.cloud_cover}%` : "",
     Осадки: item.precipitation != null ? `${item.precipitation} мм` : "",
     Ветер: item.wind_speed != null ? `${Number(item.wind_speed).toFixed(1)} м/с` : "",
     Направление: item.wind_direction != null ? `${item.wind_direction}°` : "",
@@ -476,45 +598,58 @@ function planeSize(zoom) {
   return Math.max(6, Math.min(32, Math.round(PLANE_SIZE_BASE * 1.2 ** (zoom - 7))));
 }
 
-function renderItems(layer, items, map) {
-  layer.clearLayers();
-  const zoom = map ? map.getZoom() : 7;
+function renderItems(source, items, zoom) {
+  source.entities.removeAll();
   for (const item of items) {
     if (item.kind === "city") {
       continue;
     }
-    const marker =
-      item.kind === "flight" ? planeMarker(item, zoom) : circleMarker(item);
-    marker.bindPopup(popupHtml(item));
-    marker.bindTooltip(item.name, { direction: "top", opacity: 0.9 });
-    marker.addTo(layer);
+    source.entities.add(item.kind === "flight" ? planeEntity(item, zoom) : pointEntity(item));
   }
 }
 
-function circleMarker(item) {
+function pointEntity(item) {
+  const Cesium = window.Cesium;
   const color =
     item.kind === "event"
       ? EVENT_COLORS[item.category_id] || COLORS.event
       : COLORS[item.kind] || "#f0a202";
-  return window.L.circleMarker([item.lat, item.lon], {
-    radius: radiusFor(item),
-    color,
-    weight: 1,
-    fillOpacity: 0.85,
-  });
+  return {
+    name: item.name,
+    description: popupHtml(item),
+    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 1200),
+    point: {
+      pixelSize: radiusFor(item) * 1.6,
+      color: Cesium.Color.fromCssColorString(color),
+      outlineColor: Cesium.Color.BLACK.withAlpha(0.55),
+      outlineWidth: 1,
+      disableDepthTestDistance: 25000,
+    },
+  };
 }
 
-function planeMarker(item, zoom) {
+function planeEntity(item, zoom) {
+  const Cesium = window.Cesium;
   const heading = Number(item.heading) || 0;
   const size = planeSize(zoom);
   const src = item.military ? PLANE_MILITARY : PLANE_CIVIL;
-  const icon = window.L.divIcon({
-    className: "plane-marker",
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-    html: `<img src="${src}" alt="" style="width:${size}px;height:${size}px;transform:rotate(${heading}deg)">`,
-  });
-  return window.L.marker([item.lat, item.lon], { icon, keyboard: false });
+  const alt = Number(item.altitude);
+  const meters = Number.isFinite(alt) && alt > 0 ? (alt > 20000 ? alt * 0.3048 : alt) : 9000;
+  const position = Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters);
+  const normal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(position);
+  return {
+    name: item.name,
+    description: popupHtml(item),
+    position,
+    billboard: {
+      image: src,
+      width: size,
+      height: size,
+      alignedAxis: normal,
+      rotation: Cesium.Math.toRadians(-heading),
+      disableDepthTestDistance: 20000,
+    },
+  };
 }
 
 function radiusFor(item) {
@@ -571,4 +706,63 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function attachPicking(viewer, root) {
+  const Cesium = window.Cesium;
+  const popup = document.createElement("div");
+  popup.className = "globe-popup";
+  popup.hidden = true;
+  root.appendChild(popup);
+  const tooltip = document.createElement("div");
+  tooltip.className = "globe-tooltip";
+  tooltip.hidden = true;
+  root.appendChild(tooltip);
+
+  const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  handler.setInputAction((click) => {
+    const picked = viewer.scene.pick(click.position);
+    const entity = picked && picked.id;
+    const html = entityHtml(entity);
+    if (!html) {
+      popup.hidden = true;
+      return;
+    }
+    popup.innerHTML = `<button type="button" class="globe-popup-close" aria-label="Закрыть">×</button>${html}`;
+    popup.hidden = false;
+    positionOverlay(popup, root, viewer, click.position);
+    popup.querySelector(".globe-popup-close").onclick = () => {
+      popup.hidden = true;
+    };
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  handler.setInputAction((move) => {
+    const picked = viewer.scene.pick(move.endPosition);
+    const name = picked && picked.id && picked.id.name;
+    if (name) {
+      tooltip.textContent = name;
+      tooltip.hidden = false;
+      positionOverlay(tooltip, root, viewer, move.endPosition);
+      viewer.scene.canvas.style.cursor = "pointer";
+    } else {
+      tooltip.hidden = true;
+      viewer.scene.canvas.style.cursor = "";
+    }
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+}
+
+function entityHtml(entity) {
+  if (!entity || entity.description == null) {
+    return "";
+  }
+  return typeof entity.description.getValue === "function" ? entity.description.getValue() : entity.description;
+}
+
+function positionOverlay(el, root, viewer, windowPos) {
+  const rootBox = root.getBoundingClientRect();
+  const canvasBox = viewer.scene.canvas.getBoundingClientRect();
+  const x = canvasBox.left - rootBox.left + windowPos.x + 12;
+  const y = canvasBox.top - rootBox.top + windowPos.y + 12;
+  el.style.left = `${Math.min(x, rootBox.width - el.offsetWidth - 8)}px`;
+  el.style.top = `${Math.min(y, rootBox.height - el.offsetHeight - 8)}px`;
 }
