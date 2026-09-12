@@ -4,12 +4,15 @@ export const LOOKS = [
   { id: "noir", key: "3", label: "NOIR" },
 ];
 
-let current = "crt";
+let current = "normal";
 let bound = false;
 
-export function attachLooks(root, hud) {
+export function attachLooks(root, hud, map) {
+  if (map) {
+    mountScanlines(map, root);
+  }
   renderBar(root);
-  applyLook("crt", root, hud);
+  applyLook("normal", root, hud);
 
   if (bound) {
     return;
@@ -25,6 +28,18 @@ export function attachLooks(root, hud) {
     }
     applyLook(look.id, root, hud);
   });
+}
+
+function mountScanlines(map, root) {
+  const pane = map.getPane("fxPane") || map.createPane("fxPane");
+  pane.style.zIndex = 215;
+  pane.style.pointerEvents = "none";
+  for (const name of [".look-scanlines", ".look-grain"]) {
+    const node = root.querySelector(name);
+    if (node && node.parentElement !== pane) {
+      pane.appendChild(node);
+    }
+  }
 }
 
 function renderBar(root) {

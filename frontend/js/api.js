@@ -41,5 +41,7 @@ export const api = {
     flights: (bbox) => request(`/geo/flights?${new URLSearchParams(bbox)}`),
     places: (bbox) => request(`/geo/places?${new URLSearchParams(bbox)}`),
     imagery: (params) => request(`/geo/imagery?${new URLSearchParams(params)}`),
+    weatherRadar: () => request("/geo/weather/radar"),
+    weather: (bbox) => request(`/geo/weather?${new URLSearchParams(bbox)}`),
   },
 };

@@ -41,6 +41,28 @@ def get_flights(south: BBox, west: BBox, north: BBox, east: BBox) -> dict:
         raise HTTPException(status_code=502, detail=f"Flight feed unavailable: {exc}") from exc
 
 
+@router.get("/weather/radar")
+def get_weather_radar() -> dict:
+    try:
+        return geo_service.weather_radar()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"RainViewer unavailable: {exc}") from exc
+
+
+@router.get("/weather")
+def get_weather(
+    south: BBox,
+    west: BBox,
+    north: BBox,
+    east: BBox,
+    zoom: Annotated[int, Query(ge=0, le=22)] = 4,
+) -> dict:
+    try:
+        return geo_service.weather_field(south, west, north, east, zoom)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Open-Meteo unavailable: {exc}") from exc
+
+
 @router.get("/imagery")
 def get_imagery_meta(
     lat: Annotated[float, Query(ge=-90, le=90)],

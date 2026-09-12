@@ -13,6 +13,9 @@ ADSB_MIL = "https://api.adsb.lol/v2/mil"
 LAUNCHES = "https://ll.thespacedevs.com/2.2.0/launch/upcoming/?limit=20"
 NE_PLACES = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson"
 OPENFLIGHTS = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
+RAINVIEWER_MAPS = "https://api.rainviewer.com/public/weather-maps.json"
+OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+STORM_CODES = {95, 96, 99}
 
 _CATALOGS: dict[str, list[dict]] = {}
 
@@ -277,6 +280,136 @@ def _format_src_date(value: Any) -> str | None:
     if len(text) == 8 and text.isdigit():
         return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
     return text
+
+
+def _wrap_lon(lon: float) -> float:
+    return ((lon + 180) % 360) - 180
+
+
+def _latest_frame(frames: list | None) -> dict | None:
+    if not frames:
+        return None
+    return frames[-1]
+
+
+def radar_tile_url(host: str, path: str, color: int = 2) -> str:
+    return f"{host.rstrip('/')}{path}/256/{{z}}/{{x}}/{{y}}/{color}/1_1.png"
+
+
+def satellite_tile_url(host: str, path: str) -> str:
+    return f"{host.rstrip('/')}{path}/256/{{z}}/{{x}}/{{y}}/0/0_0.png"
+
+
+def sample_weather_grid(south: float, west: float, north: float, east: float, zoom: int) -> list[dict]:
+    south, west, north, east = normalize_weather_bbox(south, west, north, east)
+    span_lon = east - west
+    span_lat = north - south
+    if span_lat <= 0 or span_lon <= 0:
+        return []
+
+    if zoom < 5:
+        cols, rows = 10, 6
+    elif zoom < 8:
+        cols, rows = 10, 7
+    else:
+        cols, rows = 12, 8
+
+    dlat = span_lat / rows
+    dlon = span_lon / cols
+    cells = []
+    for row in range(rows):
+        for col in range(cols):
+            cell_south = south + row * dlat
+            cell_north = south + (row + 1) * dlat
+            cell_west = west + col * dlon
+            cell_east = west + (col + 1) * dlon
+            lat = max(-90.0, min(90.0, (cell_south + cell_north) / 2))
+            cells.append(
+                {
+                    "lat": lat,
+                    "lon": _wrap_lon((cell_west + cell_east) / 2),
+                    "south": cell_south,
+                    "north": cell_north,
+                    "west": cell_west,
+                    "east": cell_east,
+                }
+            )
+    return cells
+
+
+def normalize_weather_bbox(south: float, west: float, north: float, east: float) -> tuple[float, float, float, float]:
+    south = max(-85.0, min(85.0, south))
+    north = max(-85.0, min(85.0, north))
+    if north <= south:
+        south, north = -60.0, 70.0
+    span = east - west
+    if span <= 0:
+        east += 360.0
+        span = east - west
+    if span > 360.0:
+        mid = west + span / 2.0
+        west = mid - 180.0
+        east = mid + 180.0
+    return south, west, north, east
+
+
+def weather_radar() -> dict:
+    def load():
+        raw = _get_json(RAINVIEWER_MAPS, timeout=15.0)
+        host = raw.get("host") or "https://tilecache.rainviewer.com"
+        radar = raw.get("radar") or {}
+        latest = _latest_frame((radar.get("past") or []) + (radar.get("nowcast") or []))
+        satellite = _latest_frame((raw.get("satellite") or {}).get("infrared") or [])
+        return {
+            "source": "RainViewer",
+            "rain_url": radar_tile_url(host, latest["path"]) if latest else None,
+            "clouds_url": satellite_tile_url(host, satellite["path"]) if satellite else None,
+            "time": latest.get("time") if latest else None,
+            "max_zoom": 7,
+        }
+
+    return _cached("weather-radar", 180, load)
+
+
+def weather_field(south: float, west: float, north: float, east: float, zoom: int) -> dict:
+    south, west, north, east = normalize_weather_bbox(south, west, north, east)
+    cells = sample_weather_grid(south, west, north, east, zoom)
+    if not cells:
+        return {"items": [], "source": "Open-Meteo", "reason": "empty_grid"}
+
+    key = f"wx:{south:.1f}:{west:.1f}:{north:.1f}:{east:.1f}:{zoom}"
+
+    def load():
+        raw = _get_json(
+            OPEN_METEO,
+            timeout=20.0,
+            params={
+                "latitude": ",".join(f"{cell['lat']:.4f}" for cell in cells),
+                "longitude": ",".join(f"{cell['lon']:.4f}" for cell in cells),
+                "current": "weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m",
+                "wind_speed_unit": "ms",
+            },
+        )
+        rows = raw if isinstance(raw, list) else [raw]
+        items = []
+        for cell, row in zip(cells, rows, strict=False):
+            current = (row or {}).get("current") or {}
+            code = current.get("weather_code")
+            items.append(
+                {
+                    **cell,
+                    "kind": "weather",
+                    "cloud_cover": current.get("cloud_cover"),
+                    "precipitation": current.get("precipitation"),
+                    "wind_speed": current.get("wind_speed_10m"),
+                    "wind_direction": current.get("wind_direction_10m"),
+                    "weather_code": code,
+                    "storm": code in STORM_CODES,
+                }
+            )
+        return {"items": items, "source": "Open-Meteo"}
+
+    return _cached(key, 600, load)
 
 
 def imagery_meta(lat: float, lon: float, zoom: int) -> dict:

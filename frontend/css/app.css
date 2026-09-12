@@ -161,18 +161,65 @@ a {
   transform-origin: center center;
 }
 
+.wind-marker,
+.storm-marker {
+  background: none !important;
+  border: none !important;
+}
+
+.wind-icon,
+.storm-bolt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(240, 248, 255, 0.92);
+  box-shadow: 0 0 0 1px rgba(11, 14, 20, 0.55);
+}
+
+.wind-arrow {
+  display: block;
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 16px solid currentColor;
+  transform-origin: 50% 70%;
+}
+
+.storm-bolt {
+  color: #ffe066;
+  font-size: 18px;
+  line-height: 1;
+  text-shadow: 0 0 8px #f0a202;
+}
+
 .look-fx {
   position: absolute;
   inset: 0;
-  z-index: 450;
+  z-index: 250;
   pointer-events: none;
   overflow: hidden;
+}
+
+.look-normal .look-fx {
+  display: none;
 }
 
 .look-fx > * {
   position: absolute;
   inset: 0;
   display: none;
+}
+
+.look-scanlines,
+.look-grain {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
 }
 
 .cursor-meta {
@@ -221,10 +268,18 @@ a {
 }
 
 .look-crt .leaflet-tile-pane,
+.look-crt .leaflet-roadsPane-pane,
+.look-crt .leaflet-labelsPane-pane {
+  filter: contrast(1.25) saturate(0.85) hue-rotate(18deg) brightness(1.05);
+}
+
 .look-crt .leaflet-overlay-pane,
 .look-crt .leaflet-marker-pane,
-.look-crt .leaflet-shadow-pane {
-  filter: contrast(1.25) saturate(0.85) hue-rotate(18deg) brightness(1.05);
+.look-crt .leaflet-shadow-pane,
+.look-crt .leaflet-weatherPane-pane,
+.look-crt .leaflet-weatherOverlayPane-pane,
+.look-crt .leaflet-weatherMarkerPane-pane {
+  filter: none;
 }
 
 .look-crt .look-scanlines,
@@ -235,8 +290,8 @@ a {
 .look-crt .look-scanlines {
   background: repeating-linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.28) 0,
-    rgba(0, 0, 0, 0.28) 1px,
+    rgba(0, 0, 0, 0.22) 0,
+    rgba(0, 0, 0, 0.22) 1px,
     transparent 1px,
     transparent 3px
   );
@@ -245,10 +300,18 @@ a {
 }
 
 .look-noir .leaflet-tile-pane,
+.look-noir .leaflet-roadsPane-pane,
+.look-noir .leaflet-labelsPane-pane {
+  filter: grayscale(1) contrast(1.5) brightness(0.88);
+}
+
 .look-noir .leaflet-overlay-pane,
 .look-noir .leaflet-marker-pane,
-.look-noir .leaflet-shadow-pane {
-  filter: grayscale(1) contrast(1.5) brightness(0.88);
+.look-noir .leaflet-shadow-pane,
+.look-noir .leaflet-weatherPane-pane,
+.look-noir .leaflet-weatherOverlayPane-pane,
+.look-noir .leaflet-weatherMarkerPane-pane {
+  filter: none;
 }
 
 .look-noir .look-grain,
