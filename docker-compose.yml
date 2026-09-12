@@ -1,0 +1,13 @@
+services:
+  app:
+    image: python:3.12-slim
+    working_dir: /app/backend
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////app/data/palantir.db
+    command: >
+      sh -c "pip install -r requirements.txt &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
