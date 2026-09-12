@@ -1,3 +1,4 @@
+import { attachLooks } from "./filters.js";
 import { attachLayers } from "./layers.js";
 
 let map = null;
@@ -25,7 +26,7 @@ export async function showGlobe() {
       zoomControl: true,
     }).setView([30, 20], 3);
     attachLayers(map);
-    setHud(hud, "Спутник · подписи сверху дорог · слои справа");
+    attachLooks(root, hud);
   }
 
   requestAnimationFrame(() => map.invalidateSize());
