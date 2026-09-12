@@ -251,7 +251,7 @@ function bindWeatherField(map, clouds, storms, wind, rain) {
         return;
       }
       const items = data.items || [];
-      view.setData(items);
+      view.setData(items, data.grid);
       syncEnabled();
       renderStorms(storms, items);
     } catch (error) {

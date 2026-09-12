@@ -31,8 +31,19 @@ def test_radar_tile_url() -> None:
 
 def test_weather_grid_covers_viewport() -> None:
     cells = sample_weather_grid(50, 30, 60, 40, zoom=6)
-    assert len(cells) == 70
+    assert 16 <= len(cells) <= 120
+    assert min(cell["south"] for cell in cells) <= 50
+    assert max(cell["north"] for cell in cells) >= 60
     assert all(-90 <= cell["lat"] <= 90 for cell in cells)
+
+
+def test_weather_grid_keeps_fine_cells_when_zoomed_in() -> None:
+    cells = sample_weather_grid(44.9, 33.9, 45.2, 34.3, zoom=11)
+    widths = [cell["east"] - cell["west"] for cell in cells]
+    heights = [cell["north"] - cell["south"] for cell in cells]
+    assert cells
+    assert max(widths) <= 0.11
+    assert max(heights) <= 0.11
 
 
 def test_weather_grid_wraps_antimeridian() -> None:
@@ -76,6 +87,7 @@ def test_weather_field_maps_open_meteo(monkeypatch) -> None:
     data = weather_field(50, 30, 60, 40, zoom=3)
     assert data["source"] == "Open-Meteo"
     assert data["items"]
+    assert data["grid"]["dlat"] > 0
     assert data["items"][0]["storm"] is True
     assert data["items"][0]["wind_speed"] == 8.4
 

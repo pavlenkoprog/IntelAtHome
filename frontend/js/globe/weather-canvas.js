@@ -6,7 +6,10 @@ export function createWeatherView(map) {
   const ctx = canvas.getContext("2d", { alpha: true });
 
   let field = [];
+  let grid = null;
   let layers = { clouds: false, rain: false, wind: false };
+  const raster = document.createElement("canvas");
+  const rasterCtx = raster.getContext("2d", { alpha: true });
 
   const syncBox = () => {
     const size = map.getSize();
@@ -18,27 +21,73 @@ export function createWeatherView(map) {
     window.L.DomUtil.setPosition(canvas, topLeft);
   };
 
+  const gridMeta = () => {
+    if (grid && grid.rows && grid.cols && grid.dlat && grid.dlon) {
+      return grid;
+    }
+    if (!field.length) {
+      return null;
+    }
+    const souths = [...new Set(field.map((cell) => Number(cell.south)))].sort((a, b) => a - b);
+    const wests = [...new Set(field.map((cell) => Number(cell.west)))].sort((a, b) => a - b);
+    if (!souths.length || !wests.length) {
+      return null;
+    }
+    return {
+      rows: souths.length,
+      cols: wests.length,
+      south: souths[0],
+      west: wests[0],
+      dlat: souths.length > 1 ? souths[1] - souths[0] : Number(field[0].north) - Number(field[0].south),
+      dlon: wests.length > 1 ? wests[1] - wests[0] : Number(field[0].east) - Number(field[0].west),
+    };
+  };
+
   const drawClouds = () => {
-    const cloudy = field.filter((cell) => (Number(cell.cloud_cover) || 0) >= 8);
-    if (!cloudy.length) {
+    const meta = gridMeta();
+    if (!meta || !field.length) {
+      return;
+    }
+    const { rows, cols, south, west, dlat, dlon } = meta;
+    if (raster.width !== cols || raster.height !== rows) {
+      raster.width = cols;
+      raster.height = rows;
+    }
+    const image = rasterCtx.createImageData(cols, rows);
+    const pixels = image.data;
+    for (let i = 0; i < field.length; i += 1) {
+      const cell = field[i];
+      const row = Number.isFinite(Number(cell.row)) ? Number(cell.row) : Math.floor(i / cols);
+      const col = Number.isFinite(Number(cell.col)) ? Number(cell.col) : i % cols;
+      if (row < 0 || col < 0 || row >= rows || col >= cols) {
+        continue;
+      }
+      const cover = Number(cell.cloud_cover) || 0;
+      const t = Math.max(0, (cover - 5) / 95);
+      if (t <= 0) {
+        continue;
+      }
+      const idx = ((rows - 1 - row) * cols + col) * 4;
+      pixels[idx] = 236;
+      pixels[idx + 1] = 244;
+      pixels[idx + 2] = 255;
+      pixels[idx + 3] = Math.round((0.16 + t * 0.7) * t * 255);
+    }
+    rasterCtx.putImageData(image, 0, 0);
+    const sw = map.latLngToContainerPoint([south, west]);
+    const ne = map.latLngToContainerPoint([south + rows * dlat, west + cols * dlon]);
+    const x = Math.min(sw.x, ne.x);
+    const y = Math.min(sw.y, ne.y);
+    const width = Math.abs(ne.x - sw.x);
+    const height = Math.abs(ne.y - sw.y);
+    if (width < 2 || height < 2) {
       return;
     }
     ctx.save();
-    ctx.filter = "blur(18px)";
-    for (const cell of cloudy) {
-      const cover = Number(cell.cloud_cover) || 0;
-      const sw = map.latLngToContainerPoint([cell.south, cell.west]);
-      const ne = map.latLngToContainerPoint([cell.north, cell.east]);
-      const x = Math.min(sw.x, ne.x);
-      const y = Math.min(sw.y, ne.y);
-      const w = Math.abs(ne.x - sw.x);
-      const h = Math.abs(ne.y - sw.y);
-      const padX = w * 0.22;
-      const padY = h * 0.22;
-      const alpha = 0.28 + (cover / 100) * 0.5;
-      ctx.fillStyle = `rgba(236,244,255,${alpha})`;
-      ctx.fillRect(x - padX, y - padY, w + padX * 2, h + padY * 2);
-    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.filter = "blur(6px)";
+    ctx.drawImage(raster, x, y, width, height);
     ctx.restore();
   };
 
@@ -170,8 +219,9 @@ export function createWeatherView(map) {
   map.on("move resize zoom", draw);
 
   return {
-    setData(items) {
+    setData(items, nextGrid) {
       field = items || [];
+      grid = nextGrid || null;
       draw();
     },
     setLayers(next) {

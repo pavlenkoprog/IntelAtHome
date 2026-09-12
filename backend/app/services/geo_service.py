@@ -1,5 +1,6 @@
 import csv
 import io
+import math
 import time
 from typing import Any
 
@@ -300,29 +301,42 @@ def satellite_tile_url(host: str, path: str) -> str:
     return f"{host.rstrip('/')}{path}/256/{{z}}/{{x}}/{{y}}/0/0_0.png"
 
 
+WEATHER_FINEST = 0.1
+WEATHER_MAX_CELLS = 120
+
+
 def sample_weather_grid(south: float, west: float, north: float, east: float, zoom: int) -> list[dict]:
+    cells, _grid = build_weather_grid(south, west, north, east, zoom)
+    return cells
+
+
+def build_weather_grid(south: float, west: float, north: float, east: float, zoom: int) -> tuple[list[dict], dict]:
     south, west, north, east = normalize_weather_bbox(south, west, north, east)
     span_lon = east - west
     span_lat = north - south
     if span_lat <= 0 or span_lon <= 0:
-        return []
+        return [], {}
 
-    if zoom < 5:
-        cols, rows = 10, 6
-    elif zoom < 8:
-        cols, rows = 10, 7
-    else:
-        cols, rows = 12, 8
+    _ = zoom
+    step = WEATHER_FINEST
+    west_g = south_g = 0.0
+    cols = rows = 1
+    for _ in range(12):
+        west_g = math.floor(west / step) * step
+        south_g = math.floor(south / step) * step
+        cols = max(1, math.ceil((east - west_g) / step - 1e-9))
+        rows = max(1, math.ceil((north - south_g) / step - 1e-9))
+        if cols * rows <= WEATHER_MAX_CELLS:
+            break
+        step *= 2
 
-    dlat = span_lat / rows
-    dlon = span_lon / cols
     cells = []
     for row in range(rows):
         for col in range(cols):
-            cell_south = south + row * dlat
-            cell_north = south + (row + 1) * dlat
-            cell_west = west + col * dlon
-            cell_east = west + (col + 1) * dlon
+            cell_south = south_g + row * step
+            cell_north = cell_south + step
+            cell_west = west_g + col * step
+            cell_east = cell_west + step
             lat = max(-90.0, min(90.0, (cell_south + cell_north) / 2))
             cells.append(
                 {
@@ -332,9 +346,21 @@ def sample_weather_grid(south: float, west: float, north: float, east: float, zo
                     "north": cell_north,
                     "west": cell_west,
                     "east": cell_east,
+                    "row": row,
+                    "col": col,
                 }
             )
-    return cells
+    grid = {
+        "rows": rows,
+        "cols": cols,
+        "south": south_g,
+        "west": west_g,
+        "north": south_g + rows * step,
+        "east": west_g + cols * step,
+        "dlat": step,
+        "dlon": step,
+    }
+    return cells, grid
 
 
 def normalize_weather_bbox(south: float, west: float, north: float, east: float) -> tuple[float, float, float, float]:
@@ -373,21 +399,22 @@ def weather_radar() -> dict:
 
 def weather_field(south: float, west: float, north: float, east: float, zoom: int) -> dict:
     south, west, north, east = normalize_weather_bbox(south, west, north, east)
-    cells = sample_weather_grid(south, west, north, east, zoom)
+    cells, grid = build_weather_grid(south, west, north, east, zoom)
     if not cells:
         return {"items": [], "source": "Open-Meteo", "reason": "empty_grid"}
 
-    key = f"wx:{south:.1f}:{west:.1f}:{north:.1f}:{east:.1f}:{zoom}"
+    key = f"wx:{grid['south']:.2f}:{grid['west']:.2f}:{grid['dlat']:.3f}:{grid['rows']}:{grid['cols']}"
 
     def load():
         raw = _get_json(
             OPEN_METEO,
-            timeout=20.0,
+            timeout=25.0,
             params={
                 "latitude": ",".join(f"{cell['lat']:.4f}" for cell in cells),
                 "longitude": ",".join(f"{cell['lon']:.4f}" for cell in cells),
                 "current": "weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m",
                 "wind_speed_unit": "ms",
+                "cell_selection": "nearest",
             },
         )
         rows = raw if isinstance(raw, list) else [raw]
@@ -407,7 +434,7 @@ def weather_field(south: float, west: float, north: float, east: float, zoom: in
                     "storm": code in STORM_CODES,
                 }
             )
-        return {"items": items, "source": "Open-Meteo"}
+        return {"items": items, "grid": grid, "source": "Open-Meteo"}
 
     return _cached(key, 600, load)
 
