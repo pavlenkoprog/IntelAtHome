@@ -25,14 +25,6 @@ def get_events() -> dict:
         raise HTTPException(status_code=502, detail=f"EONET unavailable: {exc}") from exc
 
 
-@router.get("/launches")
-def get_launches() -> dict:
-    try:
-        return geo_service.launches()
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Launch Library unavailable: {exc}") from exc
-
-
 @router.get("/flights")
 def get_flights(south: BBox, west: BBox, north: BBox, east: BBox) -> dict:
     try:

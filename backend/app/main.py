@@ -1,3 +1,4 @@
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,7 +27,7 @@ FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    warmup_catalogs()
+    threading.Thread(target=warmup_catalogs, daemon=True).start()
     yield
 
 

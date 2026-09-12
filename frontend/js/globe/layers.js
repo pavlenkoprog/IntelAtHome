@@ -22,8 +22,33 @@ const COLORS = {
   place: "#f0a202",
   earthquake: "#ff8a3d",
   event: "#fb7185",
-  launch: "#a3e635",
   flight: "#3dd68c",
+};
+
+const EVENT_COLORS = {
+  drought: "#d97706",
+  dustHaze: "#a8a29e",
+  earthquakes: "#fb923c",
+  floods: "#38bdf8",
+  landslides: "#92400e",
+  manmade: "#f472b6",
+  seaLakeIce: "#7dd3fc",
+  severeStorms: "#a78bfa",
+  snow: "#e2e8f0",
+  tempExtremes: "#facc15",
+  volcanoes: "#f97316",
+  waterColor: "#22d3ee",
+  wildfires: "#ef4444",
+};
+
+const KIND_LABELS = {
+  town: "населённый пункт",
+  airport: "аэропорт",
+  military: "военная база / аэродром",
+  port: "порт",
+  power: "электростанция",
+  earthquake: "землетрясение",
+  event: "событие NASA",
 };
 
 const timers = {};
@@ -47,7 +72,6 @@ export function attachLayers(map) {
 
   const quakes = window.L.layerGroup();
   const events = window.L.layerGroup();
-  const launches = window.L.layerGroup();
   const flights = window.L.layerGroup();
   const places = window.L.layerGroup();
   const rainTiles = tile("https://tilecache.rainviewer.com/v2/radar/0/256/{z}/{x}/{y}/2/1_1.png", "RainViewer", 19, {
@@ -84,7 +108,6 @@ export function attachLayers(map) {
         "Объекты OSM": places,
         Землетрясения: quakes,
         "События NASA": events,
-        Пуски: launches,
         Самолёты: flights,
         Осадки: rain,
         Облачность: clouds,
@@ -97,8 +120,7 @@ export function attachLayers(map) {
 
   bindLiveLayer(map, quakes, "quakes", () => api.geo.earthquakes(), 180000);
   bindLiveLayer(map, events, "events", () => api.geo.events(), 180000);
-  bindLiveLayer(map, launches, "launches", () => api.geo.launches(), 300000);
-  bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 20000, 4);
+  bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 15000, 2, 350);
   bindBBoxLayer(map, places, "places", (bbox) => api.geo.places(bbox), 180000, 4);
   bindRadarLayer(map, rain, rainTiles);
   bindWeatherField(map, clouds, storms, wind, rain);
@@ -136,7 +158,7 @@ function bindLiveLayer(map, layer, key, loader, intervalMs) {
   timers[key] = window.setInterval(refresh, intervalMs);
 }
 
-function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom) {
+function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs = 750) {
   let debounce = 0;
   let requestId = 0;
   const refresh = async () => {
@@ -170,7 +192,7 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom) {
   };
   const schedule = () => {
     window.clearTimeout(debounce);
-    debounce = window.setTimeout(refresh, 750);
+    debounce = window.setTimeout(refresh, debounceMs);
   };
 
   map.on("moveend", schedule);
@@ -362,9 +384,13 @@ function renderItems(layer, items) {
 }
 
 function circleMarker(item) {
+  const color =
+    item.kind === "event"
+      ? EVENT_COLORS[item.category_id] || COLORS.event
+      : COLORS[item.kind] || "#f0a202";
   return window.L.circleMarker([item.lat, item.lon], {
     radius: radiusFor(item),
-    color: COLORS[item.kind] || "#f0a202",
+    color,
     weight: 1,
     fillOpacity: 0.85,
   });
@@ -397,19 +423,38 @@ function radiusFor(item) {
 
 function popupHtml(item) {
   const rows = Object.entries({
-    Тип: item.kind === "flight" ? (item.military ? "военный" : "гражданский") : item.kind,
+    Тип: kindLabel(item),
     Курс: item.heading,
     Категория: item.category,
     Магнитуда: item.magnitude,
     Высота: item.altitude,
     Страна: item.country,
-    Когда: item.when,
-    Площадка: item.pad,
   })
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([label, value]) => `<div><span class="muted">${label}:</span> ${escapeHtml(value)}</div>`)
     .join("");
-  return `<strong>${escapeHtml(item.name)}</strong>${rows}`;
+  return `${popupTitle(item)}${rows}`;
+}
+
+function popupTitle(item) {
+  const name = escapeHtml(item.name);
+  const ident = item.kind === "flight" ? flightAwareIdent(item.name) : "";
+  if (!ident) {
+    return `<strong>${name}</strong>`;
+  }
+  return `<strong><a href="https://www.flightaware.com/live/flight/${ident}" target="_blank" rel="noopener noreferrer">${name}</a></strong>`;
+}
+
+function flightAwareIdent(name) {
+  const ident = String(name || "").replace(/\s+/g, "").toUpperCase();
+  return /^[A-Z0-9]{2,12}$/.test(ident) ? ident : "";
+}
+
+function kindLabel(item) {
+  if (item.kind === "flight") {
+    return item.military ? "военный борт" : "гражданский борт";
+  }
+  return KIND_LABELS[item.kind] || item.kind;
 }
 
 function escapeHtml(value) {

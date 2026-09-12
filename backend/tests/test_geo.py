@@ -1,3 +1,5 @@
+import time
+
 from app.services.geo_service import (
     _CACHE,
     _format_src_date,
@@ -14,8 +16,61 @@ def test_places_require_zoom() -> None:
     assert places(10, 10, 12, 12, zoom=3)["items"] == []
 
 
-def test_flights_reject_huge_bbox() -> None:
-    assert flights(-80, -170, 80, 170)["items"] == []
+def test_flights_use_world_cache_on_huge_bbox() -> None:
+    _CACHE.clear()
+    _CACHE["flights-world"] = (
+        time.time(),
+        {
+            "items": [
+                {"id": "abc", "name": "A", "kind": "flight", "lat": 0, "lon": 0, "military": False},
+                {"id": "xyz", "name": "B", "kind": "flight", "lat": 50, "lon": 30, "military": False},
+            ],
+            "source": "OpenSky",
+        },
+    )
+    data = flights(-80, -170, 80, 170)
+    assert {item["id"] for item in data["items"]} == {"abc", "xyz"}
+    assert data["source"] == "OpenSky"
+
+
+def test_flights_filter_cached_world_to_bbox() -> None:
+    _CACHE.clear()
+    _CACHE["flights-world"] = (
+        time.time(),
+        {
+            "items": [
+                {"id": "in", "name": "In", "kind": "flight", "lat": 51, "lon": 31, "military": False},
+                {"id": "out", "name": "Out", "kind": "flight", "lat": 10, "lon": 10, "military": False},
+            ],
+            "source": "OpenSky",
+        },
+    )
+    data = flights(40, 20, 60, 40)
+    assert [item["id"] for item in data["items"]] == ["in"]
+
+
+def test_places_keep_mixed_kinds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.geo_service._natural_earth_cities",
+        lambda: [
+            {"id": "t1", "name": "Town", "kind": "town", "lat": 10.5, "lon": 10.5, "pop": 80000},
+            {"id": "t2", "name": "Village", "kind": "town", "lat": 10.4, "lon": 10.4, "pop": 12000},
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.geo_service._natural_earth_ports",
+        lambda: [{"id": "p1", "name": "Harbor", "kind": "port", "lat": 10.3, "lon": 10.6}],
+    )
+    monkeypatch.setattr(
+        "app.services.geo_service._openflights_airports",
+        lambda: [
+            {"id": "a1", "name": "IATA Field", "kind": "airport", "lat": 10.2, "lon": 10.2, "iata": "ABC"},
+            {"id": "m1", "name": "Air Base", "kind": "military", "lat": 10.1, "lon": 10.1, "iata": None},
+        ],
+    )
+    data = places(10, 10, 11, 11, zoom=6)
+    kinds = {item["kind"] for item in data["items"]}
+    assert kinds == {"town", "port", "airport", "military"}
 
 
 def test_format_src_date() -> None:
