@@ -7,9 +7,6 @@ export function createWeatherView(map) {
 
   let field = [];
   let layers = { clouds: false, rain: false, wind: false };
-  let particles = [];
-  let raf = 0;
-  let last = 0;
 
   const syncBox = () => {
     const size = map.getSize();
@@ -21,62 +18,28 @@ export function createWeatherView(map) {
     window.L.DomUtil.setPosition(canvas, topLeft);
   };
 
-  const sample = (lat, lon) => {
-    if (!field.length) {
-      return null;
-    }
-    let best = field[0];
-    let bestD = Infinity;
-    for (const cell of field) {
-      const dlat = cell.lat - lat;
-      const dlon = (cell.lon - lon) * Math.cos((lat * Math.PI) / 180);
-      const d = dlat * dlat + dlon * dlon;
-      if (d < bestD) {
-        bestD = d;
-        best = cell;
-      }
-    }
-    return best;
-  };
-
-  const spawn = () => {
-    const bounds = map.getBounds().pad(0.08);
-    return {
-      lat: bounds.getSouth() + Math.random() * (bounds.getNorth() - bounds.getSouth()),
-      lon: bounds.getWest() + Math.random() * (bounds.getEast() - bounds.getWest()),
-      age: Math.random(),
-    };
-  };
-
-  const ensureParticles = () => {
-    const need = layers.wind ? Math.round(Math.min(900, 280 + map.getZoom() * 40)) : 0;
-    while (particles.length < need) {
-      particles.push(spawn());
-    }
-    if (particles.length > need) {
-      particles.length = need;
-    }
-  };
-
   const drawClouds = () => {
-    for (const cell of field) {
-      const cover = Number(cell.cloud_cover) || 0;
-      if (cover < 12) {
-        continue;
-      }
-      const center = map.latLngToContainerPoint([cell.lat, cell.lon]);
-      const corner = map.latLngToContainerPoint([cell.north, cell.east]);
-      const radius = Math.max(28, Math.hypot(corner.x - center.x, corner.y - center.y) * 0.95);
-      const alpha = 0.12 + (cover / 100) * 0.42;
-      const gradient = ctx.createRadialGradient(center.x, center.y, radius * 0.12, center.x, center.y, radius);
-      gradient.addColorStop(0, `rgba(255,255,255,${alpha})`);
-      gradient.addColorStop(0.45, `rgba(214,226,240,${alpha * 0.7})`);
-      gradient.addColorStop(1, "rgba(214,226,240,0)");
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
-      ctx.fill();
+    const cloudy = field.filter((cell) => (Number(cell.cloud_cover) || 0) >= 8);
+    if (!cloudy.length) {
+      return;
     }
+    ctx.save();
+    ctx.filter = "blur(18px)";
+    for (const cell of cloudy) {
+      const cover = Number(cell.cloud_cover) || 0;
+      const sw = map.latLngToContainerPoint([cell.south, cell.west]);
+      const ne = map.latLngToContainerPoint([cell.north, cell.east]);
+      const x = Math.min(sw.x, ne.x);
+      const y = Math.min(sw.y, ne.y);
+      const w = Math.abs(ne.x - sw.x);
+      const h = Math.abs(ne.y - sw.y);
+      const padX = w * 0.22;
+      const padY = h * 0.22;
+      const alpha = 0.28 + (cover / 100) * 0.5;
+      ctx.fillStyle = `rgba(236,244,255,${alpha})`;
+      ctx.fillRect(x - padX, y - padY, w + padX * 2, h + padY * 2);
+    }
+    ctx.restore();
   };
 
   const rainColor = (mm) => {
@@ -113,48 +76,84 @@ export function createWeatherView(map) {
     }
   };
 
-  const stepWind = (dt) => {
-    const bounds = map.getBounds().pad(0.12);
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    for (const particle of particles) {
-      const cell = sample(particle.lat, particle.lon);
-      const speed = Number(cell?.wind_speed) || 0.4;
-      const from = Number(cell?.wind_direction) || 0;
-      const toRad = ((from + 180) * Math.PI) / 180;
-      const meters = Math.max(0.6, speed) * (dt / 1000) * 32;
-      particle.lat += (Math.cos(toRad) * meters) / 111320;
-      particle.lon += (Math.sin(toRad) * meters) / (111320 * Math.max(0.2, Math.cos((particle.lat * Math.PI) / 180)));
-      particle.age += dt / 4200;
-      if (particle.age > 1 || !bounds.contains([particle.lat, particle.lon])) {
-        const fresh = spawn();
-        particle.lat = fresh.lat;
-        particle.lon = fresh.lon;
-        particle.age = 0;
+  const windAt = (lat, lon) => {
+    if (!field.length) {
+      return null;
+    }
+    const nearest = [];
+    for (const cell of field) {
+      const dlat = cell.lat - lat;
+      const dlon = (cell.lon - lon) * Math.cos((lat * Math.PI) / 180);
+      const d = dlat * dlat + dlon * dlon;
+      if (nearest.length < 4) {
+        nearest.push({ cell, d });
+        nearest.sort((a, b) => a.d - b.d);
         continue;
       }
-      const point = map.latLngToContainerPoint([particle.lat, particle.lon]);
-      const fade = particle.age < 0.15 ? particle.age / 0.15 : particle.age > 0.8 ? (1 - particle.age) / 0.2 : 1;
-      const tone = speed >= 12 ? "255,140,120" : speed >= 6 ? "210,230,255" : "180,220,255";
-      const len = 4 + Math.min(16, speed * 1.1);
-      ctx.strokeStyle = `rgba(${tone},${0.18 + fade * 0.28})`;
-      ctx.lineWidth = speed >= 10 ? 1.6 : 1.1;
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
-      ctx.lineTo(point.x - Math.sin(toRad) * len, point.y + Math.cos(toRad) * len);
-      ctx.stroke();
+      if (d < nearest[3].d) {
+        nearest[3] = { cell, d };
+        nearest.sort((a, b) => a.d - b.d);
+      }
+    }
+    let east = 0;
+    let north = 0;
+    let speedSum = 0;
+    let weightSum = 0;
+    for (const { cell, d } of nearest) {
+      const weight = 1 / Math.max(d, 1e-8);
+      const speed = Number(cell.wind_speed) || 0;
+      const toRad = (((Number(cell.wind_direction) || 0) + 180) * Math.PI) / 180;
+      east += Math.sin(toRad) * speed * weight;
+      north += Math.cos(toRad) * speed * weight;
+      speedSum += speed * weight;
+      weightSum += weight;
+    }
+    return {
+      speed: speedSum / weightSum,
+      toRad: Math.atan2(east, north),
+    };
+  };
+
+  const drawWind = () => {
+    if (!field.length) {
+      return;
+    }
+    const size = map.getSize();
+    const gap = Math.max(22, 36 - map.getZoom());
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(220, 236, 255, 0.42)";
+    ctx.lineWidth = 1.15;
+    for (let y = gap / 2; y < size.y; y += gap) {
+      for (let x = gap / 2; x < size.x; x += gap) {
+        const latlng = map.containerPointToLatLng([x, y]);
+        const wind = windAt(latlng.lat, latlng.lng);
+        if (!wind) {
+          continue;
+        }
+        const len = 10 + Math.min(14, wind.speed * 1.1);
+        const tipX = x + Math.sin(wind.toRad) * (len / 2);
+        const tipY = y - Math.cos(wind.toRad) * (len / 2);
+        const tailX = x - Math.sin(wind.toRad) * (len / 2);
+        const tailY = y + Math.cos(wind.toRad) * (len / 2);
+        const head = 4;
+        const left = wind.toRad + Math.PI * 0.78;
+        const right = wind.toRad - Math.PI * 0.78;
+        ctx.beginPath();
+        ctx.moveTo(tailX, tailY);
+        ctx.lineTo(tipX, tipY);
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX + Math.sin(left) * head, tipY - Math.cos(left) * head);
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX + Math.sin(right) * head, tipY - Math.cos(right) * head);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   };
 
-  const frame = (time) => {
-    raf = window.requestAnimationFrame(frame);
-    const dt = Math.min(48, time - last || 16);
-    last = time;
-    if (!layers.clouds && !layers.rain && !layers.wind) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      return;
-    }
+  const draw = () => {
     syncBox();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (layers.clouds) {
@@ -164,39 +163,23 @@ export function createWeatherView(map) {
       drawRain();
     }
     if (layers.wind) {
-      ensureParticles();
-      stepWind(dt);
-    } else {
-      particles = [];
+      drawWind();
     }
   };
 
-  const start = () => {
-    if (!raf) {
-      last = performance.now();
-      raf = window.requestAnimationFrame(frame);
-    }
-  };
-
-  map.on("move resize", syncBox);
-  start();
+  map.on("move resize zoom", draw);
 
   return {
     setData(items) {
       field = items || [];
-      particles = [];
-      ensureParticles();
+      draw();
     },
     setLayers(next) {
       layers = { ...layers, ...next };
-      if (!layers.wind) {
-        particles = [];
-      }
-      start();
+      draw();
     },
     destroy() {
-      window.cancelAnimationFrame(raf);
-      map.off("move resize", syncBox);
+      map.off("move resize zoom", draw);
       canvas.remove();
     },
   };
