@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 import math
 import threading
 import time
@@ -7,6 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
+
+log = logging.getLogger("palantir.flights")
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("[flights] %(message)s"))
+    log.addHandler(_handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 USGS_QUAKES = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson"
 EONET_EVENTS = "https://eonet.gsfc.nasa.gov/api/v3/events"
@@ -16,12 +25,10 @@ ADSB_FEEDS = (
     "https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{dist}",
 )
 ADSB_MIL = "https://api.adsb.lol/v2/mil"
-ADSB_SEEDS = (
-    (51.50, -0.12),
-    (40.70, -74.00),
-    (35.68, 139.69),
-    (55.75, 37.62),
-)
+FLIGHT_CAP = 800
+FLIGHT_POOL_TTL = 50
+ADSB_TILE_STEP = 4.0
+ADSB_DIST = 250
 NE_PLACES = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson"
 NE_PORTS = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_ports.geojson"
 OPENFLIGHTS = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
@@ -291,38 +298,16 @@ def _apply_military(items: list[dict]) -> list[dict]:
 _FLIGHT_REFRESH = threading.Lock()
 
 
-def _flight_pool() -> tuple[dict[str, dict], str | None, float | None]:
-    pool: dict[str, dict] = {}
-    source = None
-    age = None
-    opensky = _CACHE.get("flights-world")
-    if opensky:
-        age = time.time() - opensky[0]
-        source = opensky[1]["source"]
-        for item in opensky[1]["items"]:
-            pool[item["id"]] = item
-    adsb = _CACHE.get("flights-adsb")
-    if adsb:
-        if source is None:
-            source = "adsb.lol"
-        for item in adsb[1]:
-            pool.setdefault(item["id"], item)
-    return pool, source, age
-
-
-def _store_adsb(items: list[dict]) -> None:
-    existing = {item["id"]: item for item in ((_CACHE.get("flights-adsb") or (0, []))[1])}
-    for item in items:
-        existing[item["id"]] = item
-    _CACHE["flights-adsb"] = (time.time(), list(existing.values()))
-
-
 def _adsb_point(lat: float, lon: float, dist: int) -> dict:
     last_error = None
     for template in ADSB_FEEDS:
         try:
             raw = _get_json(template.format(lat=lat, lon=_wrap_lon(lon), dist=dist), timeout=6.0)
             return {"items": _parse_adsb(raw), "source": "adsb.lol" if "adsb.lol" in template else "adsb.fi"}
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response is not None and exc.response.status_code == 429:
+                break
         except httpx.HTTPError as exc:
             last_error = exc
     if last_error:
@@ -330,16 +315,150 @@ def _adsb_point(lat: float, lon: float, dist: int) -> dict:
     return {"items": [], "source": "adsb.lol"}
 
 
-def _adsb_viewport(south: float, west: float, north: float, east: float) -> dict:
-    lat = (south + north) / 2
+def _viewport_span(south: float, west: float, north: float, east: float) -> tuple[float, float, float]:
+    span_lat = max(0.1, north - south)
     if west <= east:
-        lon = (west + east) / 2
-        span = max(north - south, east - west)
+        span_lon = max(0.1, east - west)
+        mid_lon = (west + east) / 2
     else:
-        span = max(north - south, 360 + east - west)
-        lon = west + span / 2
-    dist = max(80, min(250, int(span * 45)))
-    return _adsb_point(lat, lon, dist)
+        span_lon = max(0.1, 360 + east - west)
+        mid_lon = _wrap_lon(west + span_lon / 2)
+    return span_lat, span_lon, mid_lon
+
+
+def _grid_cells(south: float, west: float, north: float, east: float) -> list[tuple[float, float]]:
+    step = ADSB_TILE_STEP
+    span_lat, span_lon, mid_lon = _viewport_span(south, west, north, east)
+    mid_lat = (south + north) / 2
+    lat = math.floor((south - step / 2) / step) * step
+    cells: list[tuple[float, float]] = []
+    while lat <= north + step / 2:
+        if west <= east:
+            lon = math.floor((west - step / 2) / step) * step
+            while lon <= east + step / 2:
+                cells.append((lat + step / 2, _wrap_lon(lon + step / 2)))
+                lon += step
+        else:
+            lon = west - step / 2
+            end = west + span_lon + step / 2
+            while lon <= end:
+                cells.append((lat + step / 2, _wrap_lon(lon + step / 2)))
+                lon += step
+        lat += step
+        if len(cells) > 24:
+            break
+    cells.sort(
+        key=lambda cell: (cell[0] - mid_lat) ** 2 + ((_wrap_lon(cell[1] - mid_lon)) ** 2)
+    )
+    return cells[:8]
+
+
+def _adsb_tile(lat: float, lon: float, dist: int) -> tuple[list[dict], bool]:
+    key = f"adsb-tile:{lat:.1f}:{lon:.1f}:{dist}"
+    hit = _CACHE.get(key)
+    if hit and hit[1] and time.time() - hit[0] < 20:
+        log.info("tile cache lat=%.2f lon=%.2f dist=%s count=%s", lat, lon, dist, len(hit[1]))
+        return hit[1], True
+    try:
+        data = _adsb_point(lat, lon, dist)
+    except httpx.HTTPError:
+        if hit and hit[1]:
+            log.info("tile stale lat=%.2f lon=%.2f dist=%s count=%s", lat, lon, dist, len(hit[1]))
+            return hit[1], True
+        raise
+    if data["items"]:
+        _CACHE[key] = (time.time(), data["items"])
+    log.info("tile fetch lat=%.2f lon=%.2f dist=%s count=%s", lat, lon, dist, len(data["items"]))
+    return data["items"], False
+
+
+def _flight_pool() -> dict[str, dict]:
+    hit = _CACHE.get("flights-pool")
+    now = time.time()
+    store = dict(hit[1]) if hit else {}
+    for key in [key for key, item in store.items() if now - item.get("_ts", 0) > FLIGHT_POOL_TTL]:
+        del store[key]
+    return store
+
+
+def _flight_pool_add(items: list[dict]) -> None:
+    store = _flight_pool()
+    now = time.time()
+    for item in items:
+        store[item["id"]] = {**item, "_ts": now}
+    _CACHE["flights-pool"] = (now, store)
+
+
+def _public_flight(item: dict) -> dict:
+    return {key: value for key, value in item.items() if key != "_ts"}
+
+
+def _adsb_cover(south: float, west: float, north: float, east: float) -> dict:
+    cells = _grid_cells(south, west, north, east)
+    items: dict[str, dict] = {}
+    cached_tiles = 0
+    fetched = None
+    for lat, lon in cells:
+        key = f"adsb-tile:{lat:.1f}:{lon:.1f}:{ADSB_DIST}"
+        hit = _CACHE.get(key)
+        if hit and hit[1] and time.time() - hit[0] < 20:
+            cached_tiles += 1
+            for item in hit[1]:
+                items[item["id"]] = item
+    for lat, lon in cells:
+        key = f"adsb-tile:{lat:.1f}:{lon:.1f}:{ADSB_DIST}"
+        hit = _CACHE.get(key)
+        if hit and hit[1] and time.time() - hit[0] < 20:
+            continue
+        try:
+            chunk, _cached = _adsb_tile(lat, lon, ADSB_DIST)
+            fetched = (lat, lon)
+            for item in chunk:
+                items[item["id"]] = item
+        except httpx.HTTPError as exc:
+            log.info("tile error %s", exc)
+        break
+    return {
+        "items": list(items.values()),
+        "source": "adsb.lol",
+        "tiles": cells,
+        "fetched": fetched,
+        "cached_tiles": cached_tiles,
+        "dist": ADSB_DIST,
+    }
+
+
+def _spread_flights(
+    items: list[dict],
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    limit: int = FLIGHT_CAP,
+) -> list[dict]:
+    if len(items) <= limit:
+        return items
+    rows, cols = 5, 5
+    span_lat, span_lon, _mid = _viewport_span(south, west, north, east)
+    buckets: list[list[dict]] = [[] for _ in range(rows * cols)]
+    for item in items:
+        row = min(rows - 1, max(0, int((item["lat"] - south) / span_lat * rows)))
+        if west <= east:
+            col = min(cols - 1, max(0, int((item["lon"] - west) / span_lon * cols)))
+        else:
+            shifted = item["lon"] - west if item["lon"] >= west else item["lon"] + 360 - west
+            col = min(cols - 1, max(0, int(shifted / span_lon * cols)))
+        buckets[row * cols + col].append(item)
+    chosen: list[dict] = []
+    index = 0
+    while len(chosen) < limit and any(buckets):
+        bucket = buckets[index % len(buckets)]
+        if bucket:
+            chosen.append(bucket.pop())
+        index += 1
+        if index > limit * len(buckets):
+            break
+    return chosen
 
 
 def _schedule_flight_refresh() -> None:
@@ -367,36 +486,84 @@ def _refresh_flights_world() -> dict:
         return value
 
 
-def _seed_adsb_regions() -> None:
-    for lat, lon in ADSB_SEEDS:
-        try:
-            data = _adsb_point(lat, lon, 250)
-            if data["items"]:
-                _store_adsb(data["items"])
-        except httpx.HTTPError:
-            continue
-        time.sleep(0.35)
-
-
-def flights(south: float, west: float, north: float, east: float) -> dict:
+def flights(south: float, west: float, north: float, east: float, zoom: int | None = None) -> dict:
+    log.info(
+        "request zoom=%s bbox=%.3f,%.3f,%.3f,%.3f",
+        zoom,
+        south,
+        west,
+        north,
+        east,
+    )
     if north <= south:
+        log.info("skip bad_bbox")
         return {"items": [], "source": "OpenSky", "reason": "bad_bbox"}
 
-    pool, source, age = _flight_pool()
-    if age is None or age >= 20:
+    opensky = _CACHE.get("flights-world")
+    if opensky is None or time.time() - opensky[0] >= 20:
         _schedule_flight_refresh()
 
-    items = [item for item in pool.values() if _in_bbox(item["lat"], item["lon"], south, west, north, east)]
-    if items:
-        return {"items": _apply_military(items)[:500], "source": source or "OpenSky"}
-
+    source = "adsb.lol"
+    cover_meta = {"tiles": [], "cached_tiles": 0, "dist": ADSB_DIST, "raw": 0, "fetched": None}
     try:
-        data = _adsb_viewport(south, west, north, east)
-    except httpx.HTTPError:
-        return {"items": [], "source": "adsb.lol", "reason": "feed_unavailable"}
-    _store_adsb(data["items"])
-    items = [item for item in data["items"] if _in_bbox(item["lat"], item["lon"], south, west, north, east)]
-    return {"items": _apply_military(items)[:500], "source": data["source"]}
+        data = _adsb_cover(south, west, north, east)
+        cover_meta = {
+            "tiles": data.get("tiles") or [],
+            "cached_tiles": data.get("cached_tiles") or 0,
+            "dist": data.get("dist") or ADSB_DIST,
+            "raw": len(data["items"]),
+            "fetched": data.get("fetched"),
+        }
+        source = data.get("source") or source
+        _flight_pool_add(data["items"])
+    except httpx.HTTPError as exc:
+        log.info("adsb cover error %s", exc)
+
+    opensky_extra = 0
+    if opensky:
+        extra = [
+            item
+            for item in opensky[1]["items"]
+            if _in_bbox(item["lat"], item["lon"], south, west, north, east)
+        ]
+        _flight_pool_add(extra)
+        opensky_extra = len(extra)
+        if extra:
+            source = opensky[1]["source"]
+
+    in_view = [
+        _public_flight(item)
+        for item in _flight_pool().values()
+        if _in_bbox(item["lat"], item["lon"], south, west, north, east)
+    ]
+    items = _spread_flights(in_view, south, west, north, east)
+    if not items:
+        log.info(
+            "empty source=%s tiles=%s cached=%s fetched=%s dist=%s adsb=%s pool=%s opensky_extra=%s",
+            source,
+            cover_meta["tiles"],
+            cover_meta["cached_tiles"],
+            cover_meta["fetched"],
+            cover_meta["dist"],
+            cover_meta["raw"],
+            len(_flight_pool()),
+            opensky_extra,
+        )
+        return {"items": [], "source": source, "reason": "feed_unavailable"}
+    log.info(
+        "loaded count=%s source=%s tiles=%s cached=%s fetched=%s dist=%s adsb=%s in_bbox=%s pool=%s opensky_extra=%s",
+        len(items),
+        source,
+        cover_meta["tiles"],
+        cover_meta["cached_tiles"],
+        cover_meta["fetched"],
+        cover_meta["dist"],
+        cover_meta["raw"],
+        len(in_view),
+        len(_flight_pool()),
+        opensky_extra,
+    )
+    return {"items": _apply_military(items), "source": source}
 
 
 def warmup_catalogs() -> None:
@@ -407,10 +574,6 @@ def warmup_catalogs() -> None:
             pass
     try:
         _refresh_flights_world()
-    except Exception:
-        pass
-    try:
-        _seed_adsb_regions()
     except Exception:
         pass
 

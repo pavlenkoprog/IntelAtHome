@@ -26,9 +26,15 @@ def get_events() -> dict:
 
 
 @router.get("/flights")
-def get_flights(south: BBox, west: BBox, north: BBox, east: BBox) -> dict:
+def get_flights(
+    south: BBox,
+    west: BBox,
+    north: BBox,
+    east: BBox,
+    zoom: Annotated[int, Query(ge=0, le=22)] = 0,
+) -> dict:
     try:
-        return geo_service.flights(south, west, north, east)
+        return geo_service.flights(south, west, north, east, zoom=zoom)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Flight feed unavailable: {exc}") from exc
 

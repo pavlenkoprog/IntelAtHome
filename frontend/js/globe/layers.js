@@ -120,7 +120,7 @@ export function attachLayers(map) {
 
   bindLiveLayer(map, quakes, "quakes", () => api.geo.earthquakes(), 180000);
   bindLiveLayer(map, events, "events", () => api.geo.events(), 180000);
-  bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 15000, 2, 350);
+  bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 20000, 6, 400);
   bindBBoxLayer(map, places, "places", (bbox) => api.geo.places(bbox), 180000, 4);
   bindRadarLayer(map, rain, rainTiles);
   bindWeatherField(map, clouds, storms, wind, rain);
@@ -161,9 +161,25 @@ function bindLiveLayer(map, layer, key, loader, intervalMs) {
 function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs = 750) {
   let debounce = 0;
   let requestId = 0;
-  const refresh = async () => {
-    if (!map.hasLayer(layer) || map.getZoom() < minZoom) {
-      if (map.getZoom() < minZoom) {
+  let inflight = false;
+  let pending = null;
+  let retry = 0;
+  let lastOk = 0;
+  const debug = key === "flights";
+  const refresh = async (reason = "unknown") => {
+    if (inflight) {
+      pending = reason === "interval" ? pending || reason : reason;
+      if (debug) {
+        console.log(`[flights] queue ${reason}`);
+      }
+      return;
+    }
+    const zoom = map.getZoom();
+    if (!map.hasLayer(layer) || zoom < minZoom) {
+      if (debug) {
+        console.log(`[flights] skip ${reason}`, { zoom, minZoom, layerOn: map.hasLayer(layer) });
+      }
+      if (zoom < minZoom) {
         layer.clearLayers();
       }
       return;
@@ -174,41 +190,82 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs 
       west: String(bounds.getWest()),
       north: String(bounds.getNorth()),
       east: String(bounds.getEast()),
-      zoom: String(Math.round(map.getZoom())),
+      zoom: String(Math.round(zoom)),
     };
+    if (reason === "interval" && Date.now() - lastOk < 8000) {
+      if (debug) {
+        console.log("[flights] skip interval, just loaded");
+      }
+      return;
+    }
     const id = ++requestId;
+    if (debug) {
+      console.log(`[flights] request ${reason}`, { id, zoom, bbox });
+    }
+    inflight = true;
     try {
       const data = await loader(bbox);
-      if (id !== requestId) {
-        return;
-      }
       if (data.reason && !(data.items || []).length) {
+        if (debug) {
+          console.log(`[flights] empty ${reason}`, { id, source: data.source, reason: data.reason });
+        }
+        if (reason !== "retry" && retry < 2) {
+          pending = pending || "retry";
+        }
         return;
       }
-      renderItems(layer, data.items || []);
-    } catch {
-      /* слой остаётся прежним */
+      retry = 0;
+      const items = data.items || [];
+      renderItems(layer, items);
+      lastOk = Date.now();
+      if (debug) {
+        console.log(`[flights] loaded ${reason}`, {
+          id,
+          count: items.length,
+          source: data.source,
+          markers: layer.getLayers().length,
+        });
+      }
+    } catch (error) {
+      if (debug) {
+        console.warn(`[flights] error ${reason}`, error);
+      }
+    } finally {
+      inflight = false;
+      if (pending) {
+        const next = pending;
+        pending = null;
+        if (next === "retry") {
+          retry += 1;
+          window.setTimeout(() => refresh("retry"), 1200);
+        } else {
+          refresh(next);
+        }
+      }
     }
   };
-  const schedule = () => {
+  const schedule = (reason) => {
     window.clearTimeout(debounce);
-    debounce = window.setTimeout(refresh, debounceMs);
+    debounce = window.setTimeout(() => refresh(reason), debounceMs);
   };
 
-  map.on("moveend", schedule);
+  map.on("moveend", () => schedule("moveend"));
   map.on("overlayadd", (event) => {
     if (event.layer === layer) {
-      refresh();
-      timers[key] = window.setInterval(refresh, intervalMs);
+      refresh("overlayadd");
+      timers[key] = window.setInterval(() => refresh("interval"), intervalMs);
     }
   });
   map.on("overlayremove", (event) => {
     if (event.layer === layer && timers[key]) {
       window.clearInterval(timers[key]);
+      if (debug) {
+        console.log("[flights] layer off");
+      }
     }
   });
-  refresh();
-  timers[key] = window.setInterval(refresh, intervalMs);
+  refresh("init");
+  timers[key] = window.setInterval(() => refresh("interval"), intervalMs);
 }
 
 function bindRadarLayer(map, overlay, tiles) {

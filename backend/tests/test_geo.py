@@ -3,6 +3,7 @@ import time
 from app.services.geo_service import (
     _CACHE,
     _format_src_date,
+    _spread_flights,
     flights,
     places,
     radar_tile_url,
@@ -16,8 +17,12 @@ def test_places_require_zoom() -> None:
     assert places(10, 10, 12, 12, zoom=3)["items"] == []
 
 
-def test_flights_use_world_cache_on_huge_bbox() -> None:
+def test_flights_use_world_cache_on_huge_bbox(monkeypatch) -> None:
     _CACHE.clear()
+    monkeypatch.setattr(
+        "app.services.geo_service._adsb_cover",
+        lambda *args, **kwargs: {"items": [], "source": "adsb.lol"},
+    )
     _CACHE["flights-world"] = (
         time.time(),
         {
@@ -33,8 +38,12 @@ def test_flights_use_world_cache_on_huge_bbox() -> None:
     assert data["source"] == "OpenSky"
 
 
-def test_flights_filter_cached_world_to_bbox() -> None:
+def test_flights_filter_cached_world_to_bbox(monkeypatch) -> None:
     _CACHE.clear()
+    monkeypatch.setattr(
+        "app.services.geo_service._adsb_cover",
+        lambda *args, **kwargs: {"items": [], "source": "adsb.lol"},
+    )
     _CACHE["flights-world"] = (
         time.time(),
         {
@@ -47,6 +56,56 @@ def test_flights_filter_cached_world_to_bbox() -> None:
     )
     data = flights(40, 20, 60, 40)
     assert [item["id"] for item in data["items"]] == ["in"]
+
+
+def test_flights_keep_non_london_when_london_is_dense(monkeypatch) -> None:
+    _CACHE.clear()
+    monkeypatch.setattr(
+        "app.services.geo_service._adsb_cover",
+        lambda *args, **kwargs: {
+            "items": [
+                *[{"id": f"lhr{i}", "name": "BAW", "kind": "flight", "lat": 51.5, "lon": -0.1, "military": False} for i in range(400)],
+                {"id": "cdg", "name": "AFR", "kind": "flight", "lat": 48.9, "lon": 2.3, "military": False},
+                {"id": "ams", "name": "KLM", "kind": "flight", "lat": 52.3, "lon": 4.8, "military": False},
+            ],
+            "source": "adsb.lol",
+        },
+    )
+    data = flights(45, -5, 54, 8)
+    ids = {item["id"] for item in data["items"]}
+    assert "cdg" in ids
+    assert "ams" in ids
+
+
+def test_flight_pool_accumulates_across_requests(monkeypatch) -> None:
+    _CACHE.clear()
+    calls = {"n": 0}
+
+    def cover(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "items": [{"id": "a", "name": "A", "kind": "flight", "lat": 60.0, "lon": 10.0, "military": False}],
+                "source": "adsb.lol",
+            }
+        return {
+            "items": [{"id": "b", "name": "B", "kind": "flight", "lat": 61.0, "lon": 11.0, "military": False}],
+            "source": "adsb.lol",
+        }
+
+    monkeypatch.setattr("app.services.geo_service._adsb_cover", cover)
+    flights(55, 0, 70, 40)
+    data = flights(55, 0, 70, 40)
+    assert {item["id"] for item in data["items"]} == {"a", "b"}
+
+
+def test_spread_flights_keeps_sparse_cells() -> None:
+    items = [
+        *[{"id": f"a{i}", "name": "A", "kind": "flight", "lat": 51.5, "lon": -0.2} for i in range(80)],
+        {"id": "b1", "name": "B", "kind": "flight", "lat": 46.0, "lon": 6.0},
+    ]
+    chosen = _spread_flights(items, 45, -5, 54, 8, limit=20)
+    assert any(item["id"] == "b1" for item in chosen)
 
 
 def test_places_keep_mixed_kinds(monkeypatch) -> None:
