@@ -1,6 +1,4 @@
-const ESRI_TILES =
-  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
-const OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+import { attachLayers } from "./layers.js";
 
 let map = null;
 
@@ -25,26 +23,9 @@ export async function showGlobe() {
       worldCopyJump: true,
       minZoom: 2,
       zoomControl: true,
-    }).setView([25, 30], 3);
-
-    const esri = window.L.tileLayer(ESRI_TILES, {
-      maxZoom: 17,
-      attribution: "Esri World Imagery",
-    });
-    const osm = window.L.tileLayer(OSM_TILES, {
-      maxZoom: 19,
-      attribution: "© OpenStreetMap",
-    });
-
-    esri.on("tileerror", () => {
-      if (!container.dataset.fallback) {
-        container.dataset.fallback = "1";
-        osm.addTo(map);
-        setHud(hud, "OpenStreetMap · спутник Esri недоступен");
-      }
-    });
-    esri.addTo(map);
-    setHud(hud, "Спутниковая карта · Esri World Imagery");
+    }).setView([30, 20], 3);
+    attachLayers(map);
+    setHud(hud, "Спутник · подписи сверху дорог · слои справа");
   }
 
   requestAnimationFrame(() => map.invalidateSize());

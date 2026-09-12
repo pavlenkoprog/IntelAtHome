@@ -18,6 +18,7 @@ class FrontendStaticFiles(StaticFiles):
 from app.api.v1.router import api_router
 from app.config import settings
 from app.db.session import init_db
+from app.services.geo_service import warmup_catalogs
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
@@ -25,6 +26,7 @@ FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    warmup_catalogs()
     yield
 
 

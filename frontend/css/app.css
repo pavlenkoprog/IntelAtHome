@@ -115,11 +115,45 @@ a {
   background: #05070c;
 }
 
+.leaflet-control-layers {
+  background: rgba(18, 22, 31, 0.92) !important;
+  color: var(--text);
+  border: 1px solid var(--line) !important;
+  border-radius: 10px !important;
+}
+
+.leaflet-control-layers-overlays,
+.leaflet-control-layers-base {
+  margin: 0;
+}
+
+.leaflet-control-layers label {
+  color: var(--text);
+}
+
+.leaflet-bar a {
+  background: rgba(18, 22, 31, 0.92) !important;
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.leaflet-tooltip {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
 .globe-hud {
   position: absolute;
-  top: 12px;
   left: 12px;
-  z-index: 2;
+  bottom: 28px;
+  z-index: 500;
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;

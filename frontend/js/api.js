@@ -34,4 +34,11 @@ export const api = {
     list: () => request("/investigations"),
     create: (payload) => request("/investigations", { method: "POST", body: JSON.stringify(payload) }),
   },
+  geo: {
+    earthquakes: () => request("/geo/earthquakes"),
+    events: () => request("/geo/events"),
+    launches: () => request("/geo/launches"),
+    flights: (bbox) => request(`/geo/flights?${new URLSearchParams(bbox)}`),
+    places: (bbox) => request(`/geo/places?${new URLSearchParams(bbox)}`),
+  },
 };
