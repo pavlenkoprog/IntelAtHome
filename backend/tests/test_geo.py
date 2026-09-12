@@ -1,10 +1,9 @@
-import time
-
-import httpx
-
 from app.services.geo_service import (
     _CACHE,
+    _STORE,
     _format_src_date,
+    _parse_adsb,
+    _put_store,
     _spread_flights,
     flights,
     places,
@@ -19,35 +18,10 @@ def test_places_require_zoom() -> None:
     assert places(10, 10, 12, 12, zoom=3)["items"] == []
 
 
-def test_flights_use_world_cache_on_huge_bbox(monkeypatch) -> None:
-    _CACHE.clear()
-    monkeypatch.setattr(
-        "app.services.geo_service._adsb_cover",
-        lambda *args, **kwargs: {"items": [], "source": "adsb.lol"},
-    )
-    _CACHE["flights-world"] = (
-        time.time(),
-        {
-            "items": [
-                {"id": "abc", "name": "A", "kind": "flight", "lat": 0, "lon": 0, "military": False},
-                {"id": "xyz", "name": "B", "kind": "flight", "lat": 50, "lon": 30, "military": False},
-            ],
-            "source": "OpenSky",
-        },
-    )
-    data = flights(-80, -170, 80, 170)
-    assert {item["id"] for item in data["items"]} == {"abc", "xyz"}
-    assert data["source"] == "OpenSky"
-
-
-def test_flights_filter_cached_world_to_bbox(monkeypatch) -> None:
-    _CACHE.clear()
-    monkeypatch.setattr(
-        "app.services.geo_service._adsb_cover",
-        lambda *args, **kwargs: {"items": [], "source": "adsb.lol"},
-    )
-    _CACHE["flights-world"] = (
-        time.time(),
+def test_flights_filter_store_to_bbox() -> None:
+    _STORE.clear()
+    _put_store(
+        "flights",
         {
             "items": [
                 {"id": "in", "name": "In", "kind": "flight", "lat": 51, "lon": 31, "military": False},
@@ -58,47 +32,49 @@ def test_flights_filter_cached_world_to_bbox(monkeypatch) -> None:
     )
     data = flights(40, 20, 60, 40)
     assert [item["id"] for item in data["items"]] == ["in"]
+    assert data["source"] == "OpenSky"
 
 
-def test_flights_keep_non_london_when_london_is_dense(monkeypatch) -> None:
-    _CACHE.clear()
-    monkeypatch.setattr(
-        "app.services.geo_service._adsb_cover",
-        lambda *args, **kwargs: {
+def test_flights_world_store_keeps_all() -> None:
+    _STORE.clear()
+    _put_store(
+        "flights",
+        {
             "items": [
-                *[{"id": f"lhr{i}", "name": "BAW", "kind": "flight", "lat": 51.5, "lon": -0.1, "military": False} for i in range(400)],
-                {"id": "cdg", "name": "AFR", "kind": "flight", "lat": 48.9, "lon": 2.3, "military": False},
-                {"id": "ams", "name": "KLM", "kind": "flight", "lat": 52.3, "lon": 4.8, "military": False},
+                {"id": "abc", "name": "A", "kind": "flight", "lat": 0, "lon": 0, "military": False},
+                {"id": "xyz", "name": "B", "kind": "flight", "lat": 50, "lon": 30, "military": False},
             ],
-            "source": "adsb.lol",
+            "source": "OpenSky",
         },
     )
-    data = flights(45, -5, 54, 8)
-    ids = {item["id"] for item in data["items"]}
-    assert "cdg" in ids
-    assert "ams" in ids
+    data = flights(-80, -170, 80, 170)
+    assert {item["id"] for item in data["items"]} == {"abc", "xyz"}
 
 
-def test_flight_pool_accumulates_across_requests(monkeypatch) -> None:
-    _CACHE.clear()
-    calls = {"n": 0}
-
-    def cover(*_args, **_kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return {
-                "items": [{"id": "a", "name": "A", "kind": "flight", "lat": 60.0, "lon": 10.0, "military": False}],
-                "source": "adsb.lol",
-            }
-        return {
-            "items": [{"id": "b", "name": "B", "kind": "flight", "lat": 61.0, "lon": 11.0, "military": False}],
-            "source": "adsb.lol",
+def test_parse_adsb_accepts_aircraft_key() -> None:
+    items = _parse_adsb(
+        {"aircraft": [{"hex": "ABC", "lat": 1.5, "lon": 2.5, "flight": "TST1", "track": 90}]}
+    )
+    assert items == [
+        {
+            "id": "abc",
+            "name": "TST1",
+            "kind": "flight",
+            "lat": 1.5,
+            "lon": 2.5,
+            "altitude": None,
+            "heading": 90,
+            "country": None,
+            "military": False,
         }
+    ]
 
-    monkeypatch.setattr("app.services.geo_service._adsb_cover", cover)
-    flights(55, 0, 70, 40)
-    data = flights(55, 0, 70, 40)
-    assert {item["id"] for item in data["items"]} == {"a", "b"}
+
+def test_flights_warming_without_store() -> None:
+    _STORE.clear()
+    data = flights(40, 20, 60, 40)
+    assert data["items"] == []
+    assert data["reason"] == "warming"
 
 
 def test_spread_flights_keeps_sparse_cells() -> None:
@@ -170,6 +146,7 @@ def test_weather_grid_wraps_antimeridian() -> None:
 
 def test_weather_radar_builds_url(monkeypatch) -> None:
     _CACHE.clear()
+    _STORE.clear()
     monkeypatch.setattr(
         "app.services.geo_service._get_json",
         lambda *args, **kwargs: {
@@ -183,70 +160,41 @@ def test_weather_radar_builds_url(monkeypatch) -> None:
     assert data["clouds_url"] is None
 
 
-def test_weather_field_uses_stale_on_429(monkeypatch) -> None:
-    _CACHE.clear()
-    payload = {
-        "current": {
-            "weather_code": 3,
-            "cloud_cover": 40,
-            "precipitation": 0,
-            "wind_speed_10m": 3.0,
-            "wind_direction_10m": 180,
-        }
-    }
-    monkeypatch.setattr("app.services.geo_service._get_json", lambda *args, **kwargs: [payload] * 40)
-    first = weather_field(50, 30, 60, 40, zoom=6)
-    assert first["items"]
-
-    def boom(*_args, **_kwargs):
-        raise httpx.HTTPStatusError("429", request=httpx.Request("GET", "https://api.open-meteo.com"), response=httpx.Response(429))
-
-    monkeypatch.setattr("app.services.geo_service._get_json", boom)
-    _CACHE.pop(next(key for key in list(_CACHE) if str(key).startswith("wx:")), None)
-    second = weather_field(51, 31, 61, 41, zoom=6)
-    assert second["items"]
-    assert second.get("reason") != "feed_unavailable"
-
-
-def test_weather_field_maps_open_meteo(monkeypatch) -> None:
-    _CACHE.clear()
-    monkeypatch.setattr(
-        "app.services.geo_service._get_json",
-        lambda *args, **kwargs: [
-            {
-                "current": {
-                    "weather_code": 95,
-                    "cloud_cover": 90,
-                    "precipitation": 2.1,
-                    "wind_speed_10m": 8.4,
-                    "wind_direction_10m": 270,
-                }
-            }
-        ]
-        * 24,
-    )
-    data = weather_field(50, 30, 60, 40, zoom=3)
-    assert data["source"] == "Open-Meteo"
-    assert data["items"]
-    assert data["grid"]["dlat"] > 0
-    assert data["items"][0]["storm"] is True
-    assert data["items"][0]["wind_speed"] == 8.4
-
-
-def test_weather_field_accepts_world_wrap(monkeypatch) -> None:
-    _CACHE.clear()
-    monkeypatch.setattr(
-        "app.services.geo_service._get_json",
-        lambda *args, **kwargs: {
-            "current": {
-                "weather_code": 3,
-                "cloud_cover": 70,
-                "precipitation": 0.2,
-                "wind_speed_10m": 4.0,
-                "wind_direction_10m": 90,
-            }
+def test_weather_field_reads_planet_store() -> None:
+    _STORE.clear()
+    _put_store(
+        "weather",
+        {
+            "items": [
+                {
+                    "lat": 55.0,
+                    "lon": 37.0,
+                    "kind": "weather",
+                    "cloud_cover": 80,
+                    "wind_speed": 5.0,
+                    "storm": False,
+                },
+                {
+                    "lat": -30.0,
+                    "lon": 150.0,
+                    "kind": "weather",
+                    "cloud_cover": 10,
+                    "wind_speed": 2.0,
+                    "storm": False,
+                },
+            ],
+            "grid": {"dlat": 12, "dlon": 12, "rows": 2, "cols": 2},
+            "source": "Open-Meteo",
         },
     )
-    data = weather_field(-85, -220, 85, 220, zoom=2)
-    assert data.get("reason") != "bbox_too_large"
-    assert data["items"]
+    data = weather_field(50, 30, 60, 40, zoom=6)
+    assert data["source"] == "Open-Meteo"
+    assert len(data["items"]) == 1
+    assert data["items"][0]["lat"] == 55.0
+
+
+def test_weather_field_warming_without_store() -> None:
+    _STORE.clear()
+    data = weather_field(50, 30, 60, 40, zoom=6)
+    assert data["items"] == []
+    assert data["reason"] == "warming"

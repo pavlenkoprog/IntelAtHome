@@ -1,18 +1,21 @@
 import csv
 import io
+import json
 import logging
 import math
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-log = logging.getLogger("palantir.flights")
+log = logging.getLogger("palantir.store")
 if not log.handlers:
     _handler = logging.StreamHandler()
-    _handler.setFormatter(logging.Formatter("[flights] %(message)s"))
+    _handler.setFormatter(logging.Formatter("[store] %(message)s"))
     log.addHandler(_handler)
     log.setLevel(logging.INFO)
     log.propagate = False
@@ -25,10 +28,12 @@ ADSB_FEEDS = (
     "https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{dist}",
 )
 ADSB_MIL = "https://api.adsb.lol/v2/mil"
+ADSB_GLOBE = "https://globe.theairtraffic.com/data/aircraft.json"
 FLIGHT_CAP = 800
-FLIGHT_POOL_TTL = 50
-ADSB_TILE_STEP = 4.0
-ADSB_DIST = 250
+SNAPSHOT_INTERVAL = 600
+WEATHER_PLANET_STEP = 20.0
+WEATHER_BATCH = 40
+SNAPSHOT_DIR = Path(__file__).resolve().parents[3] / "data" / "snapshots"
 NE_PLACES = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson"
 NE_PORTS = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_ports.geojson"
 OPENFLIGHTS = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
@@ -52,6 +57,9 @@ STORM_CODES = {95, 96, 99}
 _CATALOGS: dict[str, list[dict]] = {}
 
 _CACHE: dict[str, tuple[float, Any]] = {}
+_STORE: dict[str, dict] = {}
+_STORE_LOCK = threading.Lock()
+_SNAPSHOT_STARTED = False
 
 
 def _cached(key: str, ttl: float, loader):
@@ -62,6 +70,43 @@ def _cached(key: str, ttl: float, loader):
     value = loader()
     _CACHE[key] = (now, value)
     return value
+
+
+def _put_store(name: str, payload: dict) -> dict:
+    data = {**payload, "updated": time.time()}
+    with _STORE_LOCK:
+        _STORE[name] = data
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return data
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        path = SNAPSHOT_DIR / f"{name}.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.info("snapshot write %s failed: %s", name, exc)
+    return data
+
+
+def _get_store(name: str) -> dict | None:
+    with _STORE_LOCK:
+        hit = _STORE.get(name)
+    return dict(hit) if hit else None
+
+
+def _load_snapshots_from_disk() -> None:
+    if not SNAPSHOT_DIR.exists():
+        return
+    for path in SNAPSHOT_DIR.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and "items" in payload:
+            with _STORE_LOCK:
+                _STORE[path.stem] = payload
+            log.info("loaded disk %s items=%s", path.stem, len(payload.get("items") or []))
 
 
 def _get_json(url: str, timeout: float = 20.0, params: dict | None = None) -> Any:
@@ -164,60 +209,76 @@ def _natural_earth_ports() -> list[dict]:
     return items
 
 
-def earthquakes() -> dict:
-    def load():
-        raw = _get_json(USGS_QUAKES)
-        items = []
-        for feature in raw.get("features", [])[:250]:
-            coords = feature.get("geometry", {}).get("coordinates") or [None, None]
-            props = feature.get("properties") or {}
-            lon, lat = coords[0], coords[1]
-            if lat is None or lon is None:
-                continue
-            items.append(
-                {
-                    "id": feature.get("id"),
-                    "name": props.get("place") or "Earthquake",
-                    "kind": "earthquake",
-                    "lat": lat,
-                    "lon": lon,
-                    "magnitude": props.get("mag"),
-                    "url": props.get("url"),
-                }
-            )
-        return {"items": items, "source": "USGS"}
+def _load_earthquakes() -> dict:
+    raw = _get_json(USGS_QUAKES)
+    items = []
+    for feature in raw.get("features", [])[:250]:
+        coords = feature.get("geometry", {}).get("coordinates") or [None, None]
+        props = feature.get("properties") or {}
+        lon, lat = coords[0], coords[1]
+        if lat is None or lon is None:
+            continue
+        items.append(
+            {
+                "id": feature.get("id"),
+                "name": props.get("place") or "Earthquake",
+                "kind": "earthquake",
+                "lat": lat,
+                "lon": lon,
+                "magnitude": props.get("mag"),
+                "url": props.get("url"),
+            }
+        )
+    return {"items": items, "source": "USGS"}
 
-    return _cached("earthquakes", 120, load)
+
+def earthquakes() -> dict:
+    snap = _get_store("earthquakes")
+    if snap:
+        return {"items": snap["items"], "source": snap["source"]}
+    try:
+        data = _load_earthquakes()
+        return _put_store("earthquakes", data)
+    except httpx.HTTPError:
+        return {"items": [], "source": "USGS", "reason": "warming"}
+
+
+def _load_events() -> dict:
+    raw = _get_json(EONET_EVENTS, params={"status": "open", "limit": 200})
+    items = []
+    for event in raw.get("events", []):
+        categories = event.get("categories") or []
+        first = categories[0] if categories else {}
+        geometry = event.get("geometry") or []
+        if not geometry:
+            continue
+        coords = geometry[-1].get("coordinates") or []
+        if len(coords) < 2:
+            continue
+        lon, lat = coords[0], coords[1]
+        items.append(
+            {
+                "id": event.get("id"),
+                "name": event.get("title") or "Event",
+                "kind": "event",
+                "category": first.get("title") or "unknown",
+                "category_id": first.get("id") or "unknown",
+                "lat": lat,
+                "lon": lon,
+            }
+        )
+    return {"items": items, "source": "NASA EONET"}
 
 
 def events() -> dict:
-    def load():
-        raw = _get_json(EONET_EVENTS, params={"status": "open", "limit": 200})
-        items = []
-        for event in raw.get("events", []):
-            categories = event.get("categories") or []
-            first = categories[0] if categories else {}
-            geometry = event.get("geometry") or []
-            if not geometry:
-                continue
-            coords = geometry[-1].get("coordinates") or []
-            if len(coords) < 2:
-                continue
-            lon, lat = coords[0], coords[1]
-            items.append(
-                {
-                    "id": event.get("id"),
-                    "name": event.get("title") or "Event",
-                    "kind": "event",
-                    "category": first.get("title") or "unknown",
-                    "category_id": first.get("id") or "unknown",
-                    "lat": lat,
-                    "lon": lon,
-                }
-            )
-        return {"items": items, "source": "NASA EONET"}
-
-    return _cached("eonet", 180, load)
+    snap = _get_store("events")
+    if snap:
+        return {"items": snap["items"], "source": snap["source"]}
+    try:
+        data = _load_events()
+        return _put_store("events", data)
+    except httpx.HTTPError:
+        return {"items": [], "source": "NASA EONET", "reason": "warming"}
 
 
 def _safe_list(loader) -> list:
@@ -266,7 +327,7 @@ def _parse_opensky(raw: dict) -> list[dict]:
 
 def _parse_adsb(raw: dict) -> list[dict]:
     items = []
-    for ac in raw.get("ac") or []:
+    for ac in raw.get("ac") or raw.get("aircraft") or []:
         if ac.get("lat") is None or ac.get("lon") is None:
             continue
         icao = str(ac.get("hex") or "").lower()
@@ -295,26 +356,6 @@ def _apply_military(items: list[dict]) -> list[dict]:
     return items
 
 
-_FLIGHT_REFRESH = threading.Lock()
-
-
-def _adsb_point(lat: float, lon: float, dist: int) -> dict:
-    last_error = None
-    for template in ADSB_FEEDS:
-        try:
-            raw = _get_json(template.format(lat=lat, lon=_wrap_lon(lon), dist=dist), timeout=6.0)
-            return {"items": _parse_adsb(raw), "source": "adsb.lol" if "adsb.lol" in template else "adsb.fi"}
-        except httpx.HTTPStatusError as exc:
-            last_error = exc
-            if exc.response is not None and exc.response.status_code == 429:
-                break
-        except httpx.HTTPError as exc:
-            last_error = exc
-    if last_error:
-        raise last_error
-    return {"items": [], "source": "adsb.lol"}
-
-
 def _viewport_span(south: float, west: float, north: float, east: float) -> tuple[float, float, float]:
     span_lat = max(0.1, north - south)
     if west <= east:
@@ -324,108 +365,6 @@ def _viewport_span(south: float, west: float, north: float, east: float) -> tupl
         span_lon = max(0.1, 360 + east - west)
         mid_lon = _wrap_lon(west + span_lon / 2)
     return span_lat, span_lon, mid_lon
-
-
-def _grid_cells(south: float, west: float, north: float, east: float) -> list[tuple[float, float]]:
-    step = ADSB_TILE_STEP
-    span_lat, span_lon, mid_lon = _viewport_span(south, west, north, east)
-    mid_lat = (south + north) / 2
-    lat = math.floor((south - step / 2) / step) * step
-    cells: list[tuple[float, float]] = []
-    while lat <= north + step / 2:
-        if west <= east:
-            lon = math.floor((west - step / 2) / step) * step
-            while lon <= east + step / 2:
-                cells.append((lat + step / 2, _wrap_lon(lon + step / 2)))
-                lon += step
-        else:
-            lon = west - step / 2
-            end = west + span_lon + step / 2
-            while lon <= end:
-                cells.append((lat + step / 2, _wrap_lon(lon + step / 2)))
-                lon += step
-        lat += step
-        if len(cells) > 24:
-            break
-    cells.sort(
-        key=lambda cell: (cell[0] - mid_lat) ** 2 + ((_wrap_lon(cell[1] - mid_lon)) ** 2)
-    )
-    return cells[:8]
-
-
-def _adsb_tile(lat: float, lon: float, dist: int) -> tuple[list[dict], bool]:
-    key = f"adsb-tile:{lat:.1f}:{lon:.1f}:{dist}"
-    hit = _CACHE.get(key)
-    if hit and hit[1] and time.time() - hit[0] < 20:
-        log.info("tile cache lat=%.2f lon=%.2f dist=%s count=%s", lat, lon, dist, len(hit[1]))
-        return hit[1], True
-    try:
-        data = _adsb_point(lat, lon, dist)
-    except httpx.HTTPError:
-        if hit and hit[1]:
-            log.info("tile stale lat=%.2f lon=%.2f dist=%s count=%s", lat, lon, dist, len(hit[1]))
-            return hit[1], True
-        raise
-    if data["items"]:
-        _CACHE[key] = (time.time(), data["items"])
-    log.info("tile fetch lat=%.2f lon=%.2f dist=%s count=%s", lat, lon, dist, len(data["items"]))
-    return data["items"], False
-
-
-def _flight_pool() -> dict[str, dict]:
-    hit = _CACHE.get("flights-pool")
-    now = time.time()
-    store = dict(hit[1]) if hit else {}
-    for key in [key for key, item in store.items() if now - item.get("_ts", 0) > FLIGHT_POOL_TTL]:
-        del store[key]
-    return store
-
-
-def _flight_pool_add(items: list[dict]) -> None:
-    store = _flight_pool()
-    now = time.time()
-    for item in items:
-        store[item["id"]] = {**item, "_ts": now}
-    _CACHE["flights-pool"] = (now, store)
-
-
-def _public_flight(item: dict) -> dict:
-    return {key: value for key, value in item.items() if key != "_ts"}
-
-
-def _adsb_cover(south: float, west: float, north: float, east: float) -> dict:
-    cells = _grid_cells(south, west, north, east)
-    items: dict[str, dict] = {}
-    cached_tiles = 0
-    fetched = None
-    for lat, lon in cells:
-        key = f"adsb-tile:{lat:.1f}:{lon:.1f}:{ADSB_DIST}"
-        hit = _CACHE.get(key)
-        if hit and hit[1] and time.time() - hit[0] < 20:
-            cached_tiles += 1
-            for item in hit[1]:
-                items[item["id"]] = item
-    for lat, lon in cells:
-        key = f"adsb-tile:{lat:.1f}:{lon:.1f}:{ADSB_DIST}"
-        hit = _CACHE.get(key)
-        if hit and hit[1] and time.time() - hit[0] < 20:
-            continue
-        try:
-            chunk, _cached = _adsb_tile(lat, lon, ADSB_DIST)
-            fetched = (lat, lon)
-            for item in chunk:
-                items[item["id"]] = item
-        except httpx.HTTPError as exc:
-            log.info("tile error %s", exc)
-        break
-    return {
-        "items": list(items.values()),
-        "source": "adsb.lol",
-        "tiles": cells,
-        "fetched": fetched,
-        "cached_tiles": cached_tiles,
-        "dist": ADSB_DIST,
-    }
 
 
 def _spread_flights(
@@ -461,121 +400,213 @@ def _spread_flights(
     return chosen
 
 
-def _schedule_flight_refresh() -> None:
-    if _FLIGHT_REFRESH.locked():
-        return
+ADSB_WORLD = (
+    (51.5, 0.0),
+    (48.9, 2.3),
+    (50.1, 8.7),
+    (52.3, 4.8),
+    (41.9, 12.5),
+    (55.8, 37.6),
+    (59.9, 30.3),
+    (41.0, 29.0),
+    (40.6, -73.9),
+    (33.9, -118.4),
+    (41.9, -87.6),
+    (25.8, -80.3),
+    (49.2, -123.1),
+    (19.4, -99.1),
+    (-23.5, -46.6),
+    (-34.6, -58.4),
+    (25.2, 55.3),
+    (30.0, 31.2),
+    (28.6, 77.2),
+    (1.35, 103.8),
+    (13.7, 100.5),
+    (22.3, 114.2),
+    (31.2, 121.5),
+    (35.7, 139.7),
+    (37.6, 126.9),
+    (-33.9, 151.2),
+    (-26.1, 28.2),
+)
 
-    def run() -> None:
+
+def _refresh_flights_snapshot() -> None:
+    try:
+        raw = _get_json(OPENSKY_STATES, timeout=40.0)
+        items = _apply_military(_parse_opensky(raw))
+        if items:
+            _put_store("flights", {"items": items, "source": "OpenSky"})
+            log.info("flights snapshot %s", len(items))
+            return
+    except httpx.HTTPError as exc:
+        log.info("opensky snapshot failed: %s", exc)
+
+    try:
+        raw = _get_json(ADSB_GLOBE, timeout=40.0)
+        items = _apply_military(_parse_adsb(raw))
+        if items:
+            _put_store("flights", {"items": items, "source": "theairtraffic"})
+            log.info("flights globe snapshot %s", len(items))
+            return
+    except httpx.HTTPError as exc:
+        log.info("globe snapshot failed: %s", exc)
+
+    existing = _get_store("flights") or {"items": []}
+    by_id = {item["id"]: item for item in existing.get("items") or []}
+    before = len(by_id)
+    for lat, lon in ADSB_WORLD:
         try:
-            _refresh_flights_world()
-        except Exception:
-            _CACHE["flights-fail"] = (time.time(), True)
-
-    threading.Thread(target=run, daemon=True).start()
-
-
-def _refresh_flights_world() -> dict:
-    with _FLIGHT_REFRESH:
-        hit = _CACHE.get("flights-world")
-        if hit and time.time() - hit[0] < 20:
-            return hit[1]
-        raw = _get_json(OPENSKY_STATES, timeout=8.0)
-        value = {"items": _parse_opensky(raw), "source": "OpenSky"}
-        _CACHE["flights-world"] = (time.time(), value)
-        _CACHE.pop("flights-fail", None)
-        return value
+            raw = _get_json(ADSB_FEEDS[0].format(lat=lat, lon=lon, dist=250), timeout=8.0)
+            for item in _parse_adsb(raw):
+                by_id[item["id"]] = item
+        except httpx.HTTPError:
+            continue
+        time.sleep(0.35)
+    items = _apply_military(list(by_id.values()))
+    if items:
+        _put_store("flights", {"items": items, "source": "adsb.lol"})
+        log.info("flights fallback snapshot %s (was %s)", len(items), before)
 
 
 def flights(south: float, west: float, north: float, east: float, zoom: int | None = None) -> dict:
-    log.info(
-        "request zoom=%s bbox=%.3f,%.3f,%.3f,%.3f",
-        zoom,
-        south,
-        west,
-        north,
-        east,
-    )
     if north <= south:
-        log.info("skip bad_bbox")
         return {"items": [], "source": "OpenSky", "reason": "bad_bbox"}
+    snap = _get_store("flights")
+    if not snap:
+        return {"items": [], "source": "OpenSky", "reason": "warming"}
+    items = [item for item in snap["items"] if _in_bbox(item["lat"], item["lon"], south, west, north, east)]
+    return {"items": items, "source": snap.get("source") or "OpenSky"}
 
-    opensky = _CACHE.get("flights-world")
-    if opensky is None or time.time() - opensky[0] >= 20:
-        _schedule_flight_refresh()
 
-    source = "adsb.lol"
-    cover_meta = {"tiles": [], "cached_tiles": 0, "dist": ADSB_DIST, "raw": 0, "fetched": None}
-    try:
-        data = _adsb_cover(south, west, north, east)
-        cover_meta = {
-            "tiles": data.get("tiles") or [],
-            "cached_tiles": data.get("cached_tiles") or 0,
-            "dist": data.get("dist") or ADSB_DIST,
-            "raw": len(data["items"]),
-            "fetched": data.get("fetched"),
-        }
-        source = data.get("source") or source
-        _flight_pool_add(data["items"])
-    except httpx.HTTPError as exc:
-        log.info("adsb cover error %s", exc)
+def _planet_weather_cells() -> tuple[list[dict], dict]:
+    step = WEATHER_PLANET_STEP
+    south, west, north, east = -84.0, -180.0, 84.0, 180.0
+    rows = max(1, int(round((north - south) / step)))
+    cols = max(1, int(round((east - west) / step)))
+    cells = []
+    for row in range(rows):
+        for col in range(cols):
+            cell_south = south + row * step
+            cell_west = west + col * step
+            cells.append(
+                {
+                    "lat": cell_south + step / 2,
+                    "lon": cell_west + step / 2,
+                    "south": cell_south,
+                    "north": cell_south + step,
+                    "west": cell_west,
+                    "east": cell_west + step,
+                    "row": row,
+                    "col": col,
+                }
+            )
+    grid = {
+        "rows": rows,
+        "cols": cols,
+        "south": south,
+        "west": west,
+        "north": south + rows * step,
+        "east": west + cols * step,
+        "dlat": step,
+        "dlon": step,
+    }
+    return cells, grid
 
-    opensky_extra = 0
-    if opensky:
-        extra = [
-            item
-            for item in opensky[1]["items"]
-            if _in_bbox(item["lat"], item["lon"], south, west, north, east)
-        ]
-        _flight_pool_add(extra)
-        opensky_extra = len(extra)
-        if extra:
-            source = opensky[1]["source"]
 
-    in_view = [
-        _public_flight(item)
-        for item in _flight_pool().values()
-        if _in_bbox(item["lat"], item["lon"], south, west, north, east)
-    ]
-    items = _spread_flights(in_view, south, west, north, east)
-    if not items:
-        log.info(
-            "empty source=%s tiles=%s cached=%s fetched=%s dist=%s adsb=%s pool=%s opensky_extra=%s",
-            source,
-            cover_meta["tiles"],
-            cover_meta["cached_tiles"],
-            cover_meta["fetched"],
-            cover_meta["dist"],
-            cover_meta["raw"],
-            len(_flight_pool()),
-            opensky_extra,
-        )
-        return {"items": [], "source": source, "reason": "feed_unavailable"}
-    log.info(
-        "loaded count=%s source=%s tiles=%s cached=%s fetched=%s dist=%s adsb=%s in_bbox=%s pool=%s opensky_extra=%s",
-        len(items),
-        source,
-        cover_meta["tiles"],
-        cover_meta["cached_tiles"],
-        cover_meta["fetched"],
-        cover_meta["dist"],
-        cover_meta["raw"],
-        len(in_view),
-        len(_flight_pool()),
-        opensky_extra,
+def _refresh_weather_snapshot() -> None:
+    cells, grid = _planet_weather_cells()
+    items: list[dict] = []
+    for index in range(0, len(cells), WEATHER_BATCH):
+        chunk = cells[index : index + WEATHER_BATCH]
+        raw = None
+        for attempt in range(3):
+            try:
+                raw = _get_json(
+                    OPEN_METEO,
+                    timeout=40.0,
+                    params={
+                        "latitude": ",".join(f"{cell['lat']:.4f}" for cell in chunk),
+                        "longitude": ",".join(f"{cell['lon']:.4f}" for cell in chunk),
+                        "current": "weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m",
+                        "wind_speed_unit": "ms",
+                        "cell_selection": "nearest",
+                    },
+                )
+                break
+            except httpx.HTTPError as exc:
+                log.info("weather batch %s failed: %s", index, exc)
+                time.sleep(8.0 * (attempt + 1))
+        if raw is None:
+            continue
+        rows = raw if isinstance(raw, list) else [raw]
+        for cell, row in zip(chunk, rows, strict=False):
+            current = (row or {}).get("current") or {}
+            code = current.get("weather_code")
+            items.append(
+                {
+                    **cell,
+                    "kind": "weather",
+                    "cloud_cover": current.get("cloud_cover"),
+                    "precipitation": current.get("precipitation"),
+                    "wind_speed": current.get("wind_speed_10m"),
+                    "wind_direction": current.get("wind_direction_10m"),
+                    "weather_code": code,
+                    "storm": code in STORM_CODES,
+                }
+            )
+        time.sleep(2.0)
+    if items:
+        _put_store("weather", {"items": items, "grid": grid, "source": "Open-Meteo"})
+        log.info("weather snapshot %s", len(items))
+
+
+def _refresh_radar_snapshot() -> None:
+    data = _load_weather_radar()
+    _put_store("radar", {"items": [], **data})
+    log.info("radar snapshot %s", data.get("rain_url"))
+
+
+def refresh_snapshots() -> None:
+    jobs = (
+        ("earthquakes", lambda: _put_store("earthquakes", _load_earthquakes())),
+        ("events", lambda: _put_store("events", _load_events())),
+        ("radar", _refresh_radar_snapshot),
+        ("flights", _refresh_flights_snapshot),
+        ("weather", _refresh_weather_snapshot),
+        ("military", _military_hexes),
     )
-    return {"items": _apply_military(items), "source": source}
+    for name, job in jobs:
+        try:
+            job()
+        except Exception as exc:
+            log.info("refresh %s failed: %s", name, exc)
 
 
 def warmup_catalogs() -> None:
-    for loader in (_natural_earth_cities, _openflights_airports, _natural_earth_ports, _military_hexes):
+    for loader in (_natural_earth_cities, _openflights_airports, _natural_earth_ports):
         try:
             loader()
-        except Exception:
-            pass
-    try:
-        _refresh_flights_world()
-    except Exception:
-        pass
+            log.info("catalog %s ready", loader.__name__)
+        except Exception as exc:
+            log.info("catalog %s failed: %s", loader.__name__, exc)
+
+
+def start_snapshot_loop() -> None:
+    global _SNAPSHOT_STARTED
+    if _SNAPSHOT_STARTED:
+        return
+    _SNAPSHOT_STARTED = True
+
+    def run() -> None:
+        _load_snapshots_from_disk()
+        warmup_catalogs()
+        refresh_snapshots()
+        while True:
+            time.sleep(SNAPSHOT_INTERVAL)
+            refresh_snapshots()
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def places(south: float, west: float, north: float, east: float, zoom: int) -> dict:
@@ -724,92 +755,51 @@ def normalize_weather_bbox(south: float, west: float, north: float, east: float)
     return south, west, north, east
 
 
+def _load_weather_radar() -> dict:
+    raw = _get_json(RAINVIEWER_MAPS, timeout=15.0)
+    host = raw.get("host") or "https://tilecache.rainviewer.com"
+    radar = raw.get("radar") or {}
+    latest = _latest_frame((radar.get("past") or []) + (radar.get("nowcast") or []))
+    satellite = _latest_frame((raw.get("satellite") or {}).get("infrared") or [])
+    return {
+        "source": "RainViewer",
+        "rain_url": radar_tile_url(host, latest["path"]) if latest else None,
+        "clouds_url": satellite_tile_url(host, satellite["path"]) if satellite else None,
+        "time": latest.get("time") if latest else None,
+        "max_zoom": 7,
+    }
+
+
 def weather_radar() -> dict:
-    def load():
-        raw = _get_json(RAINVIEWER_MAPS, timeout=15.0)
-        host = raw.get("host") or "https://tilecache.rainviewer.com"
-        radar = raw.get("radar") or {}
-        latest = _latest_frame((radar.get("past") or []) + (radar.get("nowcast") or []))
-        satellite = _latest_frame((raw.get("satellite") or {}).get("infrared") or [])
+    snap = _get_store("radar")
+    if snap and snap.get("rain_url"):
         return {
-            "source": "RainViewer",
-            "rain_url": radar_tile_url(host, latest["path"]) if latest else None,
-            "clouds_url": satellite_tile_url(host, satellite["path"]) if satellite else None,
-            "time": latest.get("time") if latest else None,
-            "max_zoom": 7,
+            "source": snap.get("source") or "RainViewer",
+            "rain_url": snap.get("rain_url"),
+            "clouds_url": snap.get("clouds_url"),
+            "time": snap.get("time"),
+            "max_zoom": snap.get("max_zoom") or 7,
         }
-
-    return _cached("weather-radar", 180, load)
-
-
-def _weather_stale(key: str) -> dict | None:
-    hit = _CACHE.get(key)
-    if hit:
-        return hit[1]
-    last = _CACHE.get("weather-last")
-    return last[1] if last else None
+    try:
+        data = _load_weather_radar()
+        _put_store("radar", {"items": [], **data})
+        return data
+    except httpx.HTTPError:
+        return {"source": "RainViewer", "rain_url": None, "clouds_url": None, "time": None, "max_zoom": 7}
 
 
 def weather_field(south: float, west: float, north: float, east: float, zoom: int) -> dict:
+    _ = zoom
     south, west, north, east = normalize_weather_bbox(south, west, north, east)
-    cells, grid = build_weather_grid(south, west, north, east, zoom)
-    if not cells:
-        return {"items": [], "source": "Open-Meteo", "reason": "empty_grid"}
-
-    key = f"wx:{grid['south']:.0f}:{grid['west']:.0f}:{grid['dlat']:.1f}:{grid['rows']}:{grid['cols']}"
-    now = time.time()
-    hit = _CACHE.get(key)
-    if hit and now - hit[0] < 600:
-        return hit[1]
-
-    fetched_at = _CACHE.get("weather-fetch-at")
-    if fetched_at and now - fetched_at[0] < 12:
-        stale = _weather_stale(key)
-        if stale:
-            return stale
-
-    def load():
-        raw = _get_json(
-            OPEN_METEO,
-            timeout=25.0,
-            params={
-                "latitude": ",".join(f"{cell['lat']:.4f}" for cell in cells),
-                "longitude": ",".join(f"{cell['lon']:.4f}" for cell in cells),
-                "current": "weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m",
-                "wind_speed_unit": "ms",
-                "cell_selection": "nearest",
-            },
-        )
-        rows = raw if isinstance(raw, list) else [raw]
-        items = []
-        for cell, row in zip(cells, rows, strict=False):
-            current = (row or {}).get("current") or {}
-            code = current.get("weather_code")
-            items.append(
-                {
-                    **cell,
-                    "kind": "weather",
-                    "cloud_cover": current.get("cloud_cover"),
-                    "precipitation": current.get("precipitation"),
-                    "wind_speed": current.get("wind_speed_10m"),
-                    "wind_direction": current.get("wind_direction_10m"),
-                    "weather_code": code,
-                    "storm": code in STORM_CODES,
-                }
-            )
-        return {"items": items, "grid": grid, "source": "Open-Meteo"}
-
-    try:
-        value = load()
-    except httpx.HTTPError:
-        stale = _weather_stale(key)
-        if stale:
-            return stale
-        return {"items": [], "grid": grid, "source": "Open-Meteo", "reason": "feed_unavailable"}
-    _CACHE[key] = (now, value)
-    _CACHE["weather-last"] = (now, value)
-    _CACHE["weather-fetch-at"] = (now, True)
-    return value
+    snap = _get_store("weather")
+    if not snap:
+        return {"items": [], "source": "Open-Meteo", "reason": "warming"}
+    items = [
+        item
+        for item in snap["items"]
+        if _in_bbox(item["lat"], item["lon"], south, west, north, east)
+    ]
+    return {"items": items, "grid": snap.get("grid") or {}, "source": snap.get("source") or "Open-Meteo"}
 
 
 def imagery_meta(lat: float, lon: float, zoom: int) -> dict:

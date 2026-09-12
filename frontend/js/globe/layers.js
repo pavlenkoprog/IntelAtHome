@@ -10,7 +10,7 @@ const ESRI_ROADS =
 const OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const PLANE_CIVIL = "/vendor/leaflet/images/plane_w.png";
 const PLANE_MILITARY = "/vendor/leaflet/images/plane_r.png";
-const PLANE_SIZE = 24;
+const PLANE_SIZE_BASE = 12;
 
 const COLORS = {
   city: "#f0a202",
@@ -118,10 +118,10 @@ export function attachLayers(map) {
     )
     .addTo(map);
 
-  bindLiveLayer(map, quakes, "quakes", () => api.geo.earthquakes(), 180000);
-  bindLiveLayer(map, events, "events", () => api.geo.events(), 180000);
-  bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 20000, 6, 400);
-  bindBBoxLayer(map, places, "places", (bbox) => api.geo.places(bbox), 180000, 4);
+  bindLiveLayer(map, quakes, "quakes", () => api.geo.earthquakes(), 600000);
+  bindLiveLayer(map, events, "events", () => api.geo.events(), 600000);
+  bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 600000, 5, 250);
+  bindBBoxLayer(map, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
   bindRadarLayer(map, rain, rainTiles);
   bindWeatherField(map, clouds, storms, wind, rain);
 }
@@ -137,7 +137,7 @@ function bindLiveLayer(map, layer, key, loader, intervalMs) {
     }
     try {
       const data = await loader();
-      renderItems(layer, data.items || []);
+      renderItems(layer, data.items || [], map);
     } catch {
       /* слой остаётся прежним */
     }
@@ -216,7 +216,7 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom, debounceMs 
       }
       retry = 0;
       const items = data.items || [];
-      renderItems(layer, items);
+      renderItems(layer, items, map);
       lastOk = Date.now();
       if (debug) {
         console.log(`[flights] loaded ${reason}`, {
@@ -372,7 +372,7 @@ function bindWeatherField(map, clouds, storms, wind, rain) {
   };
   const schedule = () => {
     window.clearTimeout(debounce);
-    debounce = window.setTimeout(refresh, 2000);
+    debounce = window.setTimeout(refresh, 400);
   };
   const syncTimer = () => {
     if (timers.weather) {
@@ -459,14 +459,19 @@ function weatherPopup(item, title) {
   return `<strong>${escapeHtml(title)}</strong>${rows}<div class="muted">Open-Meteo</div>`;
 }
 
-function renderItems(layer, items) {
+function planeSize(zoom) {
+  return Math.max(6, Math.min(32, Math.round(PLANE_SIZE_BASE * 1.2 ** (zoom - 7))));
+}
+
+function renderItems(layer, items, map) {
   layer.clearLayers();
+  const zoom = map ? map.getZoom() : 7;
   for (const item of items) {
     if (item.kind === "city") {
       continue;
     }
     const marker =
-      item.kind === "flight" ? planeMarker(item) : circleMarker(item);
+      item.kind === "flight" ? planeMarker(item, zoom) : circleMarker(item);
     marker.bindPopup(popupHtml(item));
     marker.bindTooltip(item.name, { direction: "top", opacity: 0.9 });
     marker.addTo(layer);
@@ -486,14 +491,15 @@ function circleMarker(item) {
   });
 }
 
-function planeMarker(item) {
+function planeMarker(item, zoom) {
   const heading = Number(item.heading) || 0;
+  const size = planeSize(zoom);
   const src = item.military ? PLANE_MILITARY : PLANE_CIVIL;
   const icon = window.L.divIcon({
     className: "plane-marker",
-    iconSize: [PLANE_SIZE, PLANE_SIZE],
-    iconAnchor: [PLANE_SIZE / 2, PLANE_SIZE / 2],
-    html: `<img src="${src}" alt="" style="transform:rotate(${heading}deg)">`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    html: `<img src="${src}" alt="" style="width:${size}px;height:${size}px;transform:rotate(${heading}deg)">`,
   });
   return window.L.marker([item.lat, item.lon], { icon, keyboard: false });
 }

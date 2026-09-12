@@ -1,4 +1,3 @@
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,7 +18,7 @@ class FrontendStaticFiles(StaticFiles):
 from app.api.v1.router import api_router
 from app.config import settings
 from app.db.session import init_db
-from app.services.geo_service import warmup_catalogs
+from app.services.geo_service import start_snapshot_loop
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
@@ -27,7 +26,7 @@ FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    threading.Thread(target=warmup_catalogs, daemon=True).start()
+    start_snapshot_loop()
     yield
 
 

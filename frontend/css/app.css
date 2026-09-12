@@ -159,8 +159,6 @@ a {
 }
 
 .plane-marker img {
-  width: 24px;
-  height: 24px;
   display: block;
   transform-origin: center center;
 }
