@@ -24,6 +24,7 @@ const COLORS = {
   earthquake: "#ff8a3d",
   event: "#fb7185",
   flight: "#3dd68c",
+  camera: "#6be8ff",
 };
 
 const EVENT_COLORS = {
@@ -50,6 +51,7 @@ const KIND_LABELS = {
   power: "электростанция",
   earthquake: "землетрясение",
   event: "событие NASA",
+  camera: "онлайн-камера",
 };
 
 const timers = {};
@@ -65,16 +67,18 @@ export async function attachLayers(viewer, root) {
       credit: "RainViewer",
       maximumLevel: 7,
       alpha: 0.78,
+      show: false,
     }),
-    show: true,
+    show: false,
   };
-  const clouds = { layer: null, show: true };
+  const clouds = { layer: null, show: false };
 
   const quakes = addSource(viewer, "quakes");
   const events = addSource(viewer, "events");
   const flights = addSource(viewer, "flights");
   const places = addSource(viewer, "places");
-  const storms = addSource(viewer, "storms");
+  const storms = addSource(viewer, "storms", false);
+  const cameras = addSource(viewer, "cameras");
 
   const overlays = {
     labels,
@@ -83,10 +87,11 @@ export async function attachLayers(viewer, root) {
     quakes,
     events,
     flights,
+    cameras,
     rain,
     clouds,
     storms,
-    wind: { show: true },
+    wind: { show: false },
   };
 
   attachLayerControl(root, { imagery, streets }, overlays);
@@ -95,6 +100,7 @@ export async function attachLayers(viewer, root) {
   bindLiveLayer(viewer, quakes, "quakes", () => api.geo.earthquakes(), 600000);
   bindLiveLayer(viewer, events, "events", () => api.geo.events(), 600000);
   bindBBoxLayer(viewer, flights, "flights", (bbox) => api.geo.flights(bbox), 600000, 5, 250);
+  bindBBoxLayer(viewer, cameras, "cameras", (bbox) => api.geo.cameras(bbox), 180000, 0, 400);
   bindBBoxLayer(viewer, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
   bindRadarLayer(viewer, rain, clouds);
   bindWeatherField(viewer, overlays);
@@ -155,9 +161,9 @@ function addTiles(viewer, url, options = {}) {
   );
 }
 
-function addSource(viewer, name) {
+function addSource(viewer, name, show = true) {
   const source = new window.Cesium.CustomDataSource(name);
-  source.show = true;
+  source.show = show;
   viewer.dataSources.add(source);
   return source;
 }
@@ -178,6 +184,7 @@ function attachLayerControl(root, bases, overlays) {
     ["quakes", "Землетрясения"],
     ["events", "События NASA"],
     ["flights", "Самолёты"],
+    ["cameras", "Камеры"],
     ["rain", "Осадки"],
     ["clouds", "Облачность"],
     ["storms", "Грозы"],
@@ -370,7 +377,11 @@ function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounc
 }
 
 function bindRadarLayer(viewer, rain, clouds) {
+  const radarOn = () => rain.show !== false || clouds.show !== false;
   const refresh = async () => {
+    if (!radarOn()) {
+      return;
+    }
     try {
       const data = await api.geo.weatherRadar();
       if (data.rain_url) {
@@ -393,19 +404,28 @@ function bindRadarLayer(viewer, rain, clouds) {
       console.warn("weather radar", error);
     }
   };
-
-  rain.onShow = () => {
+  const startRadar = () => {
     refresh();
-    timers.rain = window.setInterval(refresh, 180000);
-  };
-  rain.onHide = () => {
-    if (timers.rain) {
-      window.clearInterval(timers.rain);
+    if (!timers.rain) {
+      timers.rain = window.setInterval(refresh, 180000);
     }
   };
-  refresh();
-  if (rain.show) {
-    timers.rain = window.setInterval(refresh, 180000);
+  const stopRadar = () => {
+    if (radarOn()) {
+      return;
+    }
+    if (timers.rain) {
+      window.clearInterval(timers.rain);
+      delete timers.rain;
+    }
+  };
+
+  rain.onShow = startRadar;
+  clouds.onShow = startRadar;
+  rain.onHide = stopRadar;
+  clouds.onHide = stopRadar;
+  if (radarOn()) {
+    startRadar();
   }
 }
 
@@ -604,8 +624,74 @@ function renderItems(source, items, zoom) {
     if (item.kind === "city") {
       continue;
     }
-    source.entities.add(item.kind === "flight" ? planeEntity(item, zoom) : pointEntity(item));
+    if (item.kind === "flight") {
+      source.entities.add(planeEntity(item, zoom));
+    } else if (item.kind === "camera") {
+      source.entities.add(cameraEntity(item, zoom));
+    } else {
+      source.entities.add(pointEntity(item));
+    }
   }
+}
+
+let CAMERA_ICON = null;
+
+function cameraIcon() {
+  if (CAMERA_ICON) {
+    return CAMERA_ICON;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = 44;
+  canvas.height = 36;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgba(6, 18, 24, 0.82)";
+  ctx.strokeStyle = COLORS.camera;
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(4, 8, 26, 20, 4);
+  } else {
+    ctx.rect(4, 8, 26, 20);
+  }
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(30, 14);
+  ctx.lineTo(40, 10);
+  ctx.lineTo(40, 26);
+  ctx.lineTo(30, 22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = COLORS.camera;
+  ctx.beginPath();
+  ctx.arc(17, 18, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(107, 232, 255, 0.35)";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(17, 18, 7, 0, Math.PI * 2);
+  ctx.stroke();
+  CAMERA_ICON = canvas;
+  return canvas;
+}
+
+function cameraEntity(item, zoom) {
+  const Cesium = window.Cesium;
+  const size = Math.max(16, Math.min(32, Math.round(30 - Number(zoom || 0) * 1.1)));
+  return {
+    name: item.name,
+    description: popupHtml(item),
+    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 40),
+    billboard: {
+      image: cameraIcon(),
+      width: size,
+      height: Math.round(size * 0.82),
+      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+      scaleByDistance: new Cesium.NearFarScalar(4.0e5, 1.0, 1.8e7, 2.4),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+  };
 }
 
 function pointEntity(item) {
@@ -673,11 +759,21 @@ function popupHtml(item) {
     Магнитуда: item.magnitude,
     Высота: item.altitude,
     Страна: item.country,
+    Город: item.city,
+    Источник: item.source,
   })
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([label, value]) => `<div><span class="muted">${label}:</span> ${escapeHtml(value)}</div>`)
     .join("");
-  return `${popupTitle(item)}${rows}`;
+  return `${popupTitle(item)}${rows}${cameraFrameHtml(item)}`;
+}
+
+function cameraFrameHtml(item) {
+  if (item.kind !== "camera" || !item.id) {
+    return "";
+  }
+  const src = api.geo.cameraFrame(item.id);
+  return `<img class="camera-frame" alt="${escapeHtml(item.name)}" data-src="${escapeHtml(src)}" src="${escapeHtml(src)}">`;
 }
 
 function popupTitle(item) {
@@ -718,6 +814,32 @@ function attachPicking(viewer, root) {
   tooltip.className = "globe-tooltip";
   tooltip.hidden = true;
   root.appendChild(tooltip);
+  let frameTimer = 0;
+
+  const stopFrame = () => {
+    if (frameTimer) {
+      window.clearInterval(frameTimer);
+      frameTimer = 0;
+    }
+  };
+
+  const bindCameraFrame = () => {
+    stopFrame();
+    const img = popup.querySelector(".camera-frame");
+    if (!img) {
+      return;
+    }
+    const src = img.dataset.src || img.getAttribute("src");
+    if (!src) {
+      return;
+    }
+    const bump = () => {
+      const next = `${src}${src.includes("?") ? "&" : "?"}t=${Date.now()}`;
+      img.src = next;
+    };
+    bump();
+    frameTimer = window.setInterval(bump, 8000);
+  };
 
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction((click) => {
@@ -725,6 +847,7 @@ function attachPicking(viewer, root) {
     const entity = picked && picked.id;
     const html = entityHtml(entity);
     if (!html) {
+      stopFrame();
       popup.hidden = true;
       return;
     }
@@ -732,8 +855,10 @@ function attachPicking(viewer, root) {
     popup.hidden = false;
     positionOverlay(popup, root, viewer, click.position);
     popup.querySelector(".globe-popup-close").onclick = () => {
+      stopFrame();
       popup.hidden = true;
     };
+    bindCameraFrame();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
   handler.setInputAction((move) => {

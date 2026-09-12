@@ -2,6 +2,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from app.services import geo_service
 
@@ -71,6 +72,26 @@ def get_imagery_meta(
         return geo_service.imagery_meta(lat, lon, zoom)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Imagery metadata unavailable: {exc}") from exc
+
+
+@router.get("/cameras")
+def get_cameras(
+    south: BBox,
+    west: BBox,
+    north: BBox,
+    east: BBox,
+    zoom: Annotated[int, Query(ge=0, le=22)] = 0,
+) -> dict:
+    return geo_service.cameras(south, west, north, east, zoom=zoom)
+
+
+@router.get("/cameras/{camera_id}/frame")
+def get_camera_frame(camera_id: str) -> Response:
+    frame = geo_service.camera_frame(camera_id)
+    if not frame:
+        raise HTTPException(status_code=404, detail="Camera frame unavailable")
+    body, content_type = frame
+    return Response(content=body, media_type=content_type, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/places")

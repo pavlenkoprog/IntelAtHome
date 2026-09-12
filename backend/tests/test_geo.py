@@ -5,8 +5,12 @@ from app.services.geo_service import (
     _STORE,
     _format_src_date,
     _parse_adsb,
+    _parse_caltrans_cameras,
+    _parse_tfl_cameras,
     _put_store,
     _spread_flights,
+    camera_frame,
+    cameras,
     flights,
     places,
     radar_tile_url,
@@ -225,6 +229,184 @@ def test_weather_field_falls_back_to_metno(monkeypatch) -> None:
     assert data["items"][0]["storm"] is True
 
 
+TFL_IMAGE = "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.00001.jpg"
+CALTRANS_IMAGE = "https://cwwp2.dot.ca.gov/data/d7/cctv/image/abc123.jpg"
+
+
+def test_parse_tfl_cameras() -> None:
+    items = _parse_tfl_cameras(
+        [
+            {
+                "id": "JamCams_00001.00001",
+                "commonName": "Oxford St",
+                "lat": 51.5,
+                "lon": -0.1,
+                "additionalProperties": [
+                    {"key": "available", "value": "true"},
+                    {"key": "imageUrl", "value": TFL_IMAGE},
+                ],
+            },
+            {
+                "id": "JamCams_bad",
+                "lat": 51.5,
+                "lon": -0.1,
+                "additionalProperties": [
+                    {"key": "available", "value": "true"},
+                    {"key": "imageUrl", "value": "https://evil.example/cam.jpg"},
+                ],
+            },
+        ]
+    )
+    assert len(items) == 1
+    assert items[0]["id"] == "tfl-00001.00001"
+    assert items[0]["kind"] == "camera"
+    assert items[0]["image_url"] == TFL_IMAGE
+
+
+def test_parse_caltrans_cameras() -> None:
+    items = _parse_caltrans_cameras(
+        {
+            "data": [
+                {
+                    "cctv": {
+                        "inService": "true",
+                        "location": {
+                            "latitude": 34.0,
+                            "longitude": -118.2,
+                            "locationName": "abc123--I-5 at foo",
+                            "nearbyPlace": "Los Angeles",
+                        },
+                        "imageData": {"static": {"currentImageURL": CALTRANS_IMAGE}},
+                    }
+                },
+                {
+                    "cctv": {
+                        "inService": "false",
+                        "location": {"latitude": 34.1, "longitude": -118.3, "locationName": "off"},
+                        "imageData": {"static": {"currentImageURL": CALTRANS_IMAGE}},
+                    }
+                },
+            ]
+        },
+        7,
+    )
+    assert len(items) == 1
+    assert items[0]["id"] == "ca-d7-abc123"
+    assert items[0]["city"] == "Los Angeles"
+
+
+def test_cameras_zoom_bbox_and_strip_url() -> None:
+    _STORE.clear()
+    _put_store(
+        "cameras",
+        {
+            "items": [
+                {
+                    "id": "tfl-in",
+                    "name": "In",
+                    "kind": "camera",
+                    "lat": 51.5,
+                    "lon": -0.1,
+                    "source": "TfL JamCam",
+                    "city": "London",
+                    "image_url": TFL_IMAGE,
+                },
+                {
+                    "id": "tfl-out",
+                    "name": "Out",
+                    "kind": "camera",
+                    "lat": 10.0,
+                    "lon": 10.0,
+                    "source": "TfL JamCam",
+                    "city": "London",
+                    "image_url": TFL_IMAGE,
+                },
+            ],
+            "source": "TfL JamCam",
+        },
+    )
+    far = cameras(50, -1, 52, 1, zoom=2)
+    assert {item["id"] for item in far["items"]} >= {"tfl-in", "tfl-out"}
+    data = cameras(50, -1, 52, 1, zoom=8)
+    assert [item["id"] for item in data["items"]] == ["tfl-in"]
+    assert "image_url" not in data["items"][0]
+
+
+def test_cameras_world_view_spreads_regions() -> None:
+    _STORE.clear()
+    london = [
+        {
+            "id": f"tfl-{i}",
+            "name": f"L{i}",
+            "kind": "camera",
+            "lat": 51.5,
+            "lon": -0.1,
+            "source": "TfL JamCam",
+            "image_url": TFL_IMAGE,
+        }
+        for i in range(80)
+    ]
+    california = [
+        {
+            "id": f"ca-d7-{i}",
+            "name": f"C{i}",
+            "kind": "camera",
+            "lat": 34.0,
+            "lon": -118.2,
+            "source": "Caltrans",
+            "image_url": CALTRANS_IMAGE,
+        }
+        for i in range(80)
+    ]
+    _put_store("cameras", {"items": [*london, *california], "source": "TfL / Caltrans"})
+    data = cameras(40, 20, 50, 40, zoom=2)
+    prefixes = {item["id"].split("-")[0] for item in data["items"]}
+    assert prefixes == {"tfl", "ca"}
+    assert "image_url" not in data["items"][0]
+
+
+def test_cameras_warming_without_store() -> None:
+    _STORE.clear()
+    data = cameras(50, -1, 52, 1, zoom=8)
+    assert data["items"] == []
+    assert data["reason"] == "warming"
+
+
+def test_camera_frame_unknown_and_allowlist(monkeypatch) -> None:
+    _STORE.clear()
+    assert camera_frame("missing") is None
+    _put_store(
+        "cameras",
+        {
+            "items": [
+                {
+                    "id": "evil",
+                    "name": "Evil",
+                    "kind": "camera",
+                    "lat": 1,
+                    "lon": 1,
+                    "image_url": "https://evil.example/cam.jpg",
+                },
+                {
+                    "id": "tfl-00001.00001",
+                    "name": "Oxford St",
+                    "kind": "camera",
+                    "lat": 51.5,
+                    "lon": -0.1,
+                    "image_url": TFL_IMAGE,
+                },
+            ],
+            "source": "TfL JamCam",
+        },
+    )
+    assert camera_frame("evil") is None
+    monkeypatch.setattr(
+        "app.services.geo_service._get_bytes",
+        lambda url, timeout=8.0: (b"jpeg-bytes", "image/jpeg"),
+    )
+    assert camera_frame("tfl-00001.00001") == (b"jpeg-bytes", "image/jpeg")
+
+
 def test_weather_field_accepts_world_wrap(monkeypatch) -> None:
     _CACHE.clear()
     monkeypatch.setattr(
@@ -242,3 +424,41 @@ def test_weather_field_accepts_world_wrap(monkeypatch) -> None:
     data = weather_field(-85, -220, 85, 220, zoom=2)
     assert data.get("reason") != "bbox_too_large"
     assert data["items"]
+
+
+def test_camera_http_routes(client, monkeypatch) -> None:
+    snap = {
+        "items": [
+            {
+                "id": "tfl-00001.00001",
+                "name": "Oxford St",
+                "kind": "camera",
+                "lat": 51.5,
+                "lon": -0.1,
+                "source": "TfL JamCam",
+                "city": "London",
+                "image_url": TFL_IMAGE,
+            }
+        ],
+        "source": "TfL JamCam",
+    }
+    monkeypatch.setattr("app.services.geo_service._get_store", lambda name: snap if name == "cameras" else None)
+    monkeypatch.setattr(
+        "app.services.geo_service._get_bytes",
+        lambda url, timeout=8.0: (b"jpeg-bytes", "image/jpeg"),
+    )
+    listed = client.get(
+        "/api/v1/geo/cameras",
+        params={"south": 50, "west": -1, "north": 52, "east": 1, "zoom": 8},
+    )
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body["items"][0]["id"] == "tfl-00001.00001"
+    assert "image_url" not in body["items"][0]
+
+    frame = client.get("/api/v1/geo/cameras/tfl-00001.00001/frame")
+    assert frame.status_code == 200
+    assert frame.content == b"jpeg-bytes"
+    assert frame.headers["content-type"].startswith("image/jpeg")
+    assert frame.headers.get("cache-control") == "no-store"
+    assert client.get("/api/v1/geo/cameras/missing/frame").status_code == 404

@@ -187,6 +187,22 @@ a {
   cursor: pointer;
 }
 
+.globe-popup:has(.camera-frame) {
+  max-width: 360px;
+}
+
+.camera-frame {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  min-height: 120px;
+  margin-top: 8px;
+  background: #0b0f14;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  object-fit: cover;
+}
+
 .storm-marker {
   background: none !important;
   border: none !important;

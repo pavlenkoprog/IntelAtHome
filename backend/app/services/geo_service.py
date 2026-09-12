@@ -52,6 +52,14 @@ RAINVIEWER_MAPS = "https://api.rainviewer.com/public/weather-maps.json"
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 METNO_FORECAST = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 STORM_CODES = {95, 96, 99}
+TFL_JAMCAM = "https://api.tfl.gov.uk/Place/Type/JamCam"
+TFL_IMAGE_ORIGIN = "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/"
+CALTRANS_DISTRICTS = (4, 7, 11, 3)
+CAMERA_IMAGE_PREFIXES = (
+    TFL_IMAGE_ORIGIN,
+    "https://cwwp2.dot.ca.gov/",
+)
+CAMERA_BBOX_CAP = 150
 
 _CATALOGS: dict[str, list[dict]] = {}
 
@@ -124,6 +132,18 @@ def _get_text(url: str, timeout: float = 30.0) -> str:
         response = client.get(url)
         response.raise_for_status()
         return response.text
+
+
+def _get_bytes(url: str, timeout: float = 8.0) -> tuple[bytes, str]:
+    with httpx.Client(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"User-Agent": "PalantirAtHome/0.1 (local globe; cameras)"},
+    ) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type") or "image/jpeg"
+        return response.content, content_type.split(";")[0].strip()
 
 
 def _in_bbox(lat: float, lon: float, south: float, west: float, north: float, east: float) -> bool:
@@ -482,6 +502,158 @@ def flights(south: float, west: float, north: float, east: float, zoom: int | No
     return {"items": items, "source": snap.get("source") or "OpenSky"}
 
 
+def _tfl_prop(place: dict, key: str) -> str:
+    for item in place.get("additionalProperties") or []:
+        if item.get("key") == key:
+            return str(item.get("value") or "")
+    return ""
+
+
+def _parse_tfl_cameras(raw) -> list[dict]:
+    items = []
+    if not isinstance(raw, list):
+        return items
+    for place in raw:
+        if _tfl_prop(place, "available").lower() != "true":
+            continue
+        try:
+            lat = float(place.get("lat"))
+            lon = float(place.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        image_url = _tfl_prop(place, "imageUrl")
+        if not image_url.startswith(TFL_IMAGE_ORIGIN):
+            continue
+        raw_id = str(place.get("id") or "").replace("JamCams_", "")
+        if not raw_id:
+            continue
+        items.append(
+            {
+                "id": f"tfl-{raw_id}",
+                "name": place.get("commonName") or f"JamCam {raw_id}",
+                "kind": "camera",
+                "lat": lat,
+                "lon": lon,
+                "source": "TfL JamCam",
+                "city": "London",
+                "image_url": image_url,
+            }
+        )
+    return items
+
+
+def _parse_caltrans_cameras(raw, district: int) -> list[dict]:
+    items = []
+    rows = raw.get("data") if isinstance(raw, dict) else None
+    if not isinstance(rows, list):
+        return items
+    for row in rows:
+        cctv = (row or {}).get("cctv") or {}
+        if str(cctv.get("inService") or "").lower() != "true":
+            continue
+        loc = cctv.get("location") or {}
+        try:
+            lat = float(loc.get("latitude"))
+            lon = float(loc.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        image_url = str(((cctv.get("imageData") or {}).get("static") or {}).get("currentImageURL") or "")
+        if not image_url.startswith("https://cwwp2.dot.ca.gov/"):
+            continue
+        location_name = str(loc.get("locationName") or "").strip()
+        code = location_name.split("--", 1)[0].strip().lower() or f"x{len(items)}"
+        label = location_name.split("--", 1)[-1].strip() or f"Caltrans D{district}"
+        place = str(loc.get("nearbyPlace") or "").strip()
+        items.append(
+            {
+                "id": f"ca-d{district}-{code}",
+                "name": f"{label} ({place})" if place else label,
+                "kind": "camera",
+                "lat": lat,
+                "lon": lon,
+                "source": "Caltrans",
+                "city": place or f"Caltrans D{district}",
+                "image_url": image_url,
+            }
+        )
+    return items
+
+
+def _refresh_cameras_snapshot() -> None:
+    by_id: dict[str, dict] = {}
+    try:
+        for item in _parse_tfl_cameras(_get_json(TFL_JAMCAM, timeout=20.0)):
+            by_id[item["id"]] = item
+    except httpx.HTTPError as exc:
+        log.info("tfl cameras failed: %s", exc)
+
+    def load_district(district: int) -> list[dict]:
+        url = f"https://cwwp2.dot.ca.gov/data/d{district}/cctv/cctvStatusD{district:02d}.json"
+        return _parse_caltrans_cameras(_get_json(url, timeout=20.0), district)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for future in [pool.submit(load_district, district) for district in CALTRANS_DISTRICTS]:
+            try:
+                for item in future.result():
+                    by_id[item["id"]] = item
+            except httpx.HTTPError as exc:
+                log.info("caltrans cameras failed: %s", exc)
+
+    items = list(by_id.values())
+    if items:
+        sources = sorted({item["source"] for item in items})
+        _put_store("cameras", {"items": items, "source": " / ".join(sources)})
+        log.info("cameras snapshot %s", len(items))
+
+
+def _public_camera(item: dict) -> dict:
+    return {key: value for key, value in item.items() if key != "image_url"}
+
+
+def cameras(south: float, west: float, north: float, east: float, zoom: int | None = None) -> dict:
+    if north <= south:
+        return {"items": [], "source": "TfL / Caltrans", "reason": "bad_bbox"}
+    snap = _get_store("cameras")
+    if not snap:
+        return {"items": [], "source": "TfL / Caltrans", "reason": "warming"}
+    world = zoom is not None and zoom < 4
+    if world:
+        items = list(snap["items"])
+        south, west, north, east = -85.0, -180.0, 85.0, 180.0
+    else:
+        items = [item for item in snap["items"] if _in_bbox(item["lat"], item["lon"], south, west, north, east)]
+    if len(items) > CAMERA_BBOX_CAP:
+        if world or zoom is None or zoom < 8:
+            items = _spread_flights(items, south, west, north, east, CAMERA_BBOX_CAP)
+        else:
+            mid_lat = (south + north) / 2
+            mid_lon = (west + east) / 2
+            items.sort(key=lambda item: (item["lat"] - mid_lat) ** 2 + (item["lon"] - mid_lon) ** 2)
+            items = items[:CAMERA_BBOX_CAP]
+    return {"items": [_public_camera(item) for item in items], "source": snap.get("source") or "TfL / Caltrans"}
+
+
+def camera_record(camera_id: str) -> dict | None:
+    snap = _get_store("cameras") or {}
+    for item in snap.get("items") or []:
+        if item.get("id") == camera_id:
+            return item
+    return None
+
+
+def camera_frame(camera_id: str) -> tuple[bytes, str] | None:
+    item = camera_record(camera_id)
+    if not item:
+        return None
+    url = str(item.get("image_url") or "")
+    if not any(url.startswith(prefix) for prefix in CAMERA_IMAGE_PREFIXES):
+        return None
+    try:
+        return _get_bytes(url)
+    except httpx.HTTPError:
+        return None
+
+
 def _refresh_radar_snapshot() -> None:
     data = _load_weather_radar()
     _put_store("radar", {"items": [], **data})
@@ -494,6 +666,7 @@ def refresh_snapshots() -> None:
         ("events", lambda: _put_store("events", _load_events())),
         ("radar", _refresh_radar_snapshot),
         ("flights", _refresh_flights_snapshot),
+        ("cameras", _refresh_cameras_snapshot),
         ("military", _military_hexes),
     )
     for name, job in jobs:
