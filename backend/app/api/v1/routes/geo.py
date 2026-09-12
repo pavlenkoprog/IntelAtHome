@@ -41,6 +41,18 @@ def get_flights(south: BBox, west: BBox, north: BBox, east: BBox) -> dict:
         raise HTTPException(status_code=502, detail=f"Flight feed unavailable: {exc}") from exc
 
 
+@router.get("/imagery")
+def get_imagery_meta(
+    lat: Annotated[float, Query(ge=-90, le=90)],
+    lon: Annotated[float, Query(ge=-180, le=180)],
+    zoom: Annotated[int, Query(ge=0, le=22)] = 8,
+) -> dict:
+    try:
+        return geo_service.imagery_meta(lat, lon, zoom)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Imagery metadata unavailable: {exc}") from exc
+
+
 @router.get("/places")
 def get_places(
     south: BBox,

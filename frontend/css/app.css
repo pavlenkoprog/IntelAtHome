@@ -175,6 +175,24 @@ a {
   display: none;
 }
 
+.cursor-meta {
+  position: absolute;
+  z-index: 850;
+  transform: translate(0, 0);
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(11, 14, 20, 0.86);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.3;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .look-bar {
   position: absolute;
   left: 12px;

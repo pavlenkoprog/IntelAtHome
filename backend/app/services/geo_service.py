@@ -263,3 +263,57 @@ def places(south: float, west: float, north: float, east: float, zoom: int) -> d
             if _in_bbox(item["lat"], item["lon"], south, west, north, east)
         )
     return {"items": items[:400], "source": "Natural Earth / OpenFlights"}
+
+
+ESRI_IMAGERY_META = (
+    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/4/query"
+)
+
+
+def _format_src_date(value: Any) -> str | None:
+    if value in (None, "", 99999, "99999"):
+        return None
+    text = str(int(value)) if isinstance(value, (int, float)) else str(value)
+    if len(text) == 8 and text.isdigit():
+        return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
+    return text
+
+
+def imagery_meta(lat: float, lon: float, zoom: int) -> dict:
+    key = f"img:{lat:.3f}:{lon:.3f}:{zoom}"
+
+    def load():
+        raw = _get_json(
+            ESRI_IMAGERY_META,
+            timeout=20.0,
+            params={
+                "geometry": f"{lon},{lat}",
+                "geometryType": "esriGeometryPoint",
+                "inSR": 4326,
+                "spatialRel": "esriSpatialRelIntersects",
+                "outFields": "SRC_DATE,SRC_RES,SRC_DESC,NICE_NAME,NICE_DESC,MinMapLevel,MaxMapLevel",
+                "returnGeometry": "false",
+                "f": "json",
+            },
+        )
+        records = [feature.get("attributes") or {} for feature in raw.get("features") or []]
+        matching = [
+            item
+            for item in records
+            if item.get("MinMapLevel") is None
+            or item.get("MaxMapLevel") is None
+            or item["MinMapLevel"] <= zoom <= item["MaxMapLevel"]
+        ]
+        pool = matching or records
+        if not pool:
+            return {"date": None, "source": None, "name": None, "resolution_m": None}
+        chosen = min(pool, key=lambda item: item.get("SRC_RES") if item.get("SRC_RES") is not None else 9999)
+        source = chosen.get("NICE_DESC") or chosen.get("SRC_DESC") or chosen.get("NICE_NAME")
+        return {
+            "date": _format_src_date(chosen.get("SRC_DATE")),
+            "source": source,
+            "name": chosen.get("NICE_NAME"),
+            "resolution_m": chosen.get("SRC_RES"),
+        }
+
+    return _cached(key, 600, load)

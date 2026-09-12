@@ -1,3 +1,4 @@
+import { attachCursorMeta } from "./cursor-meta.js";
 import { attachLooks } from "./filters.js";
 import { attachLayers } from "./layers.js";
 
@@ -27,6 +28,7 @@ export async function showGlobe() {
     }).setView([30, 20], 3);
     attachLayers(map);
     attachLooks(root, hud);
+    attachCursorMeta(map, root);
   }
 
   requestAnimationFrame(() => map.invalidateSize());

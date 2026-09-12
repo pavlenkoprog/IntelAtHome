@@ -40,5 +40,6 @@ export const api = {
     launches: () => request("/geo/launches"),
     flights: (bbox) => request(`/geo/flights?${new URLSearchParams(bbox)}`),
     places: (bbox) => request(`/geo/places?${new URLSearchParams(bbox)}`),
+    imagery: (params) => request(`/geo/imagery?${new URLSearchParams(params)}`),
   },
 };
