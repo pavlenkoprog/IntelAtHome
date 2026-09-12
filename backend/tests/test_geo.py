@@ -1,5 +1,7 @@
 import time
 
+import httpx
+
 from app.services.geo_service import (
     _CACHE,
     _format_src_date,
@@ -179,6 +181,31 @@ def test_weather_radar_builds_url(monkeypatch) -> None:
     data = weather_radar()
     assert data["rain_url"].endswith("/v2/radar/abc/256/{z}/{x}/{y}/2/1_1.png")
     assert data["clouds_url"] is None
+
+
+def test_weather_field_uses_stale_on_429(monkeypatch) -> None:
+    _CACHE.clear()
+    payload = {
+        "current": {
+            "weather_code": 3,
+            "cloud_cover": 40,
+            "precipitation": 0,
+            "wind_speed_10m": 3.0,
+            "wind_direction_10m": 180,
+        }
+    }
+    monkeypatch.setattr("app.services.geo_service._get_json", lambda *args, **kwargs: [payload] * 40)
+    first = weather_field(50, 30, 60, 40, zoom=6)
+    assert first["items"]
+
+    def boom(*_args, **_kwargs):
+        raise httpx.HTTPStatusError("429", request=httpx.Request("GET", "https://api.open-meteo.com"), response=httpx.Response(429))
+
+    monkeypatch.setattr("app.services.geo_service._get_json", boom)
+    _CACHE.pop(next(key for key in list(_CACHE) if str(key).startswith("wx:")), None)
+    second = weather_field(51, 31, 61, 41, zoom=6)
+    assert second["items"]
+    assert second.get("reason") != "feed_unavailable"
 
 
 def test_weather_field_maps_open_meteo(monkeypatch) -> None:

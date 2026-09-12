@@ -57,8 +57,8 @@ def get_weather(
 ) -> dict:
     try:
         return geo_service.weather_field(south, west, north, east, zoom)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Open-Meteo unavailable: {exc}") from exc
+    except httpx.HTTPError:
+        return {"items": [], "source": "Open-Meteo", "reason": "feed_unavailable"}
 
 
 @router.get("/imagery")

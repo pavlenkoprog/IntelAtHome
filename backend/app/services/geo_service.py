@@ -663,8 +663,7 @@ def build_weather_grid(south: float, west: float, north: float, east: float, zoo
     if span_lat <= 0 or span_lon <= 0:
         return [], {}
 
-    _ = zoom
-    step = WEATHER_FINEST
+    step = 2.0 if zoom <= 6 else WEATHER_FINEST
     west_g = south_g = 0.0
     cols = rows = 1
     for _ in range(12):
@@ -743,13 +742,31 @@ def weather_radar() -> dict:
     return _cached("weather-radar", 180, load)
 
 
+def _weather_stale(key: str) -> dict | None:
+    hit = _CACHE.get(key)
+    if hit:
+        return hit[1]
+    last = _CACHE.get("weather-last")
+    return last[1] if last else None
+
+
 def weather_field(south: float, west: float, north: float, east: float, zoom: int) -> dict:
     south, west, north, east = normalize_weather_bbox(south, west, north, east)
     cells, grid = build_weather_grid(south, west, north, east, zoom)
     if not cells:
         return {"items": [], "source": "Open-Meteo", "reason": "empty_grid"}
 
-    key = f"wx:{grid['south']:.2f}:{grid['west']:.2f}:{grid['dlat']:.3f}:{grid['rows']}:{grid['cols']}"
+    key = f"wx:{grid['south']:.0f}:{grid['west']:.0f}:{grid['dlat']:.1f}:{grid['rows']}:{grid['cols']}"
+    now = time.time()
+    hit = _CACHE.get(key)
+    if hit and now - hit[0] < 600:
+        return hit[1]
+
+    fetched_at = _CACHE.get("weather-fetch-at")
+    if fetched_at and now - fetched_at[0] < 12:
+        stale = _weather_stale(key)
+        if stale:
+            return stale
 
     def load():
         raw = _get_json(
@@ -782,7 +799,17 @@ def weather_field(south: float, west: float, north: float, east: float, zoom: in
             )
         return {"items": items, "grid": grid, "source": "Open-Meteo"}
 
-    return _cached(key, 600, load)
+    try:
+        value = load()
+    except httpx.HTTPError:
+        stale = _weather_stale(key)
+        if stale:
+            return stale
+        return {"items": [], "grid": grid, "source": "Open-Meteo", "reason": "feed_unavailable"}
+    _CACHE[key] = (now, value)
+    _CACHE["weather-last"] = (now, value)
+    _CACHE["weather-fetch-at"] = (now, True)
+    return value
 
 
 def imagery_meta(lat: float, lon: float, zoom: int) -> dict:

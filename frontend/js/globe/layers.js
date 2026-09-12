@@ -300,9 +300,24 @@ function bindRadarLayer(map, overlay, tiles) {
 function bindWeatherField(map, clouds, storms, wind, rain) {
   let debounce = 0;
   let requestId = 0;
+  let inflight = false;
+  let pending = false;
+  let lastBBox = null;
+  const fieldOverlays = [clouds, storms, wind];
   const overlays = [clouds, storms, wind, rain];
   const view = createWeatherView(map);
-  const anyOn = () => overlays.some((layer) => map.hasLayer(layer));
+  const anyOn = () => fieldOverlays.some((layer) => map.hasLayer(layer));
+  const smallMove = (bbox) => {
+    if (!lastBBox || lastBBox.zoom !== bbox.zoom) {
+      return false;
+    }
+    const spanLat = Number(lastBBox.north) - Number(lastBBox.south);
+    const spanLon = Number(lastBBox.east) - Number(lastBBox.west);
+    return (
+      Math.abs(Number(bbox.south) - Number(lastBBox.south)) < spanLat * 0.2 &&
+      Math.abs(Number(bbox.west) - Number(lastBBox.west)) < spanLon * 0.2
+    );
+  };
   const syncEnabled = () => {
     view.setLayers({
       clouds: map.hasLayer(clouds),
@@ -315,6 +330,10 @@ function bindWeatherField(map, clouds, storms, wind, rain) {
       view.setData([]);
       return;
     }
+    if (inflight) {
+      pending = true;
+      return;
+    }
     const bounds = map.getBounds();
     const bbox = {
       south: String(bounds.getSouth()),
@@ -323,23 +342,37 @@ function bindWeatherField(map, clouds, storms, wind, rain) {
       east: String(bounds.getEast()),
       zoom: String(Math.round(map.getZoom())),
     };
+    if (smallMove(bbox)) {
+      return;
+    }
     const id = ++requestId;
+    inflight = true;
     try {
       const data = await api.geo.weather(bbox);
       if (id !== requestId) {
         return;
       }
       const items = data.items || [];
+      if (!items.length && data.reason) {
+        return;
+      }
       view.setData(items, data.grid);
+      lastBBox = bbox;
       syncEnabled();
       renderStorms(storms, items);
     } catch (error) {
       console.warn("weather field", error);
+    } finally {
+      inflight = false;
+      if (pending) {
+        pending = false;
+        window.setTimeout(refresh, 1500);
+      }
     }
   };
   const schedule = () => {
     window.clearTimeout(debounce);
-    debounce = window.setTimeout(refresh, 750);
+    debounce = window.setTimeout(refresh, 2000);
   };
   const syncTimer = () => {
     if (timers.weather) {
