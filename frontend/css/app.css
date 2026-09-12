@@ -161,39 +161,37 @@ a {
   transform-origin: center center;
 }
 
-.wind-marker,
+.weather-canvas {
+  pointer-events: none;
+}
+
 .storm-marker {
   background: none !important;
   border: none !important;
 }
 
-.wind-icon,
 .storm-bolt {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: rgba(240, 248, 255, 0.92);
-  box-shadow: 0 0 0 1px rgba(11, 14, 20, 0.55);
-}
-
-.wind-arrow {
   display: block;
-  width: 0;
-  height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 16px solid currentColor;
-  transform-origin: 50% 70%;
+  color: #ff4d4d;
+  font-size: 22px;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 0 10px #ff2a2a, 0 0 18px #ffb703;
+  animation: storm-flash 1.8s ease-in-out infinite;
 }
 
-.storm-bolt {
-  color: #ffe066;
-  font-size: 18px;
-  line-height: 1;
-  text-shadow: 0 0 8px #f0a202;
+@keyframes storm-flash {
+  0%,
+  86%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  90%,
+  95% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
 }
 
 .look-fx {

@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { createWeatherView } from "./weather-canvas.js";
 
 const ESRI_IMAGERY =
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
@@ -51,11 +52,10 @@ export function attachLayers(map) {
   const places = window.L.layerGroup();
   const rainTiles = tile("https://tilecache.rainviewer.com/v2/radar/0/256/{z}/{x}/{y}/2/1_1.png", "RainViewer", 19, {
     pane: "weatherPane",
-    opacity: 0.9,
+    opacity: 0.78,
     maxNativeZoom: 7,
   });
-  const rainCells = window.L.layerGroup();
-  const rain = window.L.layerGroup([rainTiles, rainCells]);
+  const rain = window.L.layerGroup([rainTiles]);
   const clouds = window.L.layerGroup();
   const storms = window.L.layerGroup();
   const wind = window.L.layerGroup();
@@ -101,7 +101,7 @@ export function attachLayers(map) {
   bindBBoxLayer(map, flights, "flights", (bbox) => api.geo.flights(bbox), 20000, 4);
   bindBBoxLayer(map, places, "places", (bbox) => api.geo.places(bbox), 180000, 4);
   bindRadarLayer(map, rain, rainTiles);
-  bindWeatherField(map, clouds, storms, wind, rain, rainCells);
+  bindWeatherField(map, clouds, storms, wind, rain);
 }
 
 function tile(url, attribution, maxZoom, extra = {}) {
@@ -218,13 +218,22 @@ function bindRadarLayer(map, overlay, tiles) {
   }
 }
 
-function bindWeatherField(map, clouds, storms, wind, rain, rainCells) {
+function bindWeatherField(map, clouds, storms, wind, rain) {
   let debounce = 0;
   let requestId = 0;
   const overlays = [clouds, storms, wind, rain];
+  const view = createWeatherView(map);
   const anyOn = () => overlays.some((layer) => map.hasLayer(layer));
+  const syncEnabled = () => {
+    view.setLayers({
+      clouds: map.hasLayer(clouds),
+      rain: map.hasLayer(rain),
+      wind: map.hasLayer(wind),
+    });
+  };
   const refresh = async () => {
     if (!anyOn()) {
+      view.setData([]);
       return;
     }
     const bounds = map.getBounds();
@@ -242,10 +251,9 @@ function bindWeatherField(map, clouds, storms, wind, rain, rainCells) {
         return;
       }
       const items = data.items || [];
-      renderClouds(clouds, items);
+      view.setData(items);
+      syncEnabled();
       renderStorms(storms, items);
-      renderWind(wind, items);
-      renderRain(rainCells, items);
     } catch (error) {
       console.warn("weather field", error);
     }
@@ -277,59 +285,18 @@ function bindWeatherField(map, clouds, storms, wind, rain, rainCells) {
   });
   map.on("overlayadd", (event) => {
     if (overlays.includes(event.layer)) {
+      syncEnabled();
       syncTimer();
     }
   });
   map.on("overlayremove", (event) => {
     if (overlays.includes(event.layer)) {
+      syncEnabled();
       syncTimer();
     }
   });
+  syncEnabled();
   syncTimer();
-}
-
-function renderClouds(layer, items) {
-  layer.clearLayers();
-  for (const item of items) {
-    const cover = Number(item.cloud_cover) || 0;
-    if (cover < 15) {
-      continue;
-    }
-    window.L.rectangle(
-      [
-        [item.south, item.west],
-        [item.north, item.east],
-      ],
-      {
-        pane: "weatherOverlayPane",
-        stroke: false,
-        fillColor: "#c5dcff",
-        fillOpacity: 0.35 + (cover / 100) * 0.4,
-        interactive: false,
-      },
-    ).addTo(layer);
-  }
-}
-
-function renderRain(layer, items) {
-  layer.clearLayers();
-  for (const item of items) {
-    const mm = Number(item.precipitation) || 0;
-    if (mm <= 0) {
-      continue;
-    }
-    window.L.circleMarker([item.lat, item.lon], {
-      pane: "weatherOverlayPane",
-      radius: Math.max(7, Math.min(18, 6 + mm * 4)),
-      color: "#e0f2fe",
-      weight: 2,
-      fillColor: "#38bdf8",
-      fillOpacity: 0.9,
-    })
-      .bindPopup(weatherPopup(item, "Осадки"))
-      .bindTooltip(`${mm} мм`, { direction: "top", opacity: 0.9 })
-      .addTo(layer);
-  }
 }
 
 function renderStorms(layer, items) {
@@ -340,8 +307,8 @@ function renderStorms(layer, items) {
     }
     const icon = window.L.divIcon({
       className: "storm-marker",
-      iconSize: [28, 28],
-      iconAnchor: [14, 14],
+      iconSize: [22, 28],
+      iconAnchor: [11, 14],
       html: `<span class="storm-bolt">↯</span>`,
     });
     const marker = window.L.marker([item.lat, item.lon], {
@@ -352,34 +319,6 @@ function renderStorms(layer, items) {
     });
     marker.bindPopup(weatherPopup(item, "Гроза"));
     marker.bindTooltip(stormLabel(item.weather_code), { direction: "top", opacity: 0.9 });
-    marker.addTo(layer);
-  }
-}
-
-function renderWind(layer, items) {
-  layer.clearLayers();
-  for (const item of items) {
-    const speed = Number(item.wind_speed) || 0;
-    if (speed < 0.5) {
-      continue;
-    }
-    const from = Number(item.wind_direction) || 0;
-    const to = (from + 180) % 360;
-    const color = speed >= 12 ? "#ff6b6b" : speed >= 6 ? "#f0a202" : "#6cb6ff";
-    const icon = window.L.divIcon({
-      className: "wind-marker",
-      iconSize: [28, 28],
-      iconAnchor: [14, 14],
-      html: `<span class="wind-icon"><span class="wind-arrow" style="transform:rotate(${to}deg);color:${color}"></span></span>`,
-    });
-    const marker = window.L.marker([item.lat, item.lon], {
-      icon,
-      keyboard: false,
-      pane: "weatherMarkerPane",
-      zIndexOffset: 300,
-    });
-    marker.bindPopup(weatherPopup(item, "Ветер"));
-    marker.bindTooltip(`${speed.toFixed(1)} м/с`, { direction: "top", opacity: 0.9 });
     marker.addTo(layer);
   }
 }
