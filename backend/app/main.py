@@ -5,6 +5,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+
+class FrontendStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.endswith(".js"):
+            response.headers["content-type"] = "application/javascript; charset=utf-8"
+        elif path.endswith(".css"):
+            response.headers["content-type"] = "text/css; charset=utf-8"
+        return response
+
 from app.api.v1.router import api_router
 from app.config import settings
 from app.db.session import init_db
@@ -35,7 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix="/api/v1")
 
     if FRONTEND_DIR.exists():
-        app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+        app.mount("/", FrontendStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
     return app
 

@@ -32,7 +32,15 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Откройте http://127.0.0.1:8000 — UI, http://127.0.0.1:8000/docs — Swagger.
+Откройте http://127.0.0.1:8000 — UI (глобус по умолчанию), http://127.0.0.1:8000/docs — Swagger.
+
+Если порт 8000 занят:
+
+```powershell
+uvicorn app.main:app --reload --port 8001
+```
+
+Главный экран — **CesiumJS-глобус** без ключей: Esri World Imagery, запасной вариант OSM. Переключатель 3D / 2D в панели Cesium. Живые слои (самолёты, корабли, камеры) пока не подключены.
 
 Через Docker:
 

@@ -1,10 +1,12 @@
 import { api } from "./api.js";
+import { hideGlobe, showGlobe } from "./globe/viewer.js";
 import { renderDashboard } from "./views/dashboard.js";
 import { renderDatasets } from "./views/datasets.js";
 import { renderEntities } from "./views/entities.js";
 import { renderInvestigations } from "./views/investigations.js";
 
 const titles = {
+  globe: "Глобус",
   dashboard: "Обзор",
   investigations: "Расследования",
   entities: "Сущности",
@@ -16,7 +18,7 @@ const titleNode = document.getElementById("page-title");
 const statusNode = document.getElementById("api-status");
 
 function currentRoute() {
-  return window.location.hash.replace("#/", "") || "dashboard";
+  return window.location.hash.replace("#/", "") || "globe";
 }
 
 function setActiveNav(route) {
@@ -25,10 +27,39 @@ function setActiveNav(route) {
   });
 }
 
+async function pingApi() {
+  try {
+    await api.health();
+    statusNode.textContent = "API online";
+    statusNode.className = "status ok";
+    return true;
+  } catch {
+    statusNode.textContent = "API offline";
+    statusNode.className = "status err";
+    return false;
+  }
+}
+
 async function render() {
   const route = currentRoute();
-  titleNode.textContent = titles[route] || "Обзор";
-  setActiveNav(titles[route] ? route : "dashboard");
+  titleNode.textContent = titles[route] || "Глобус";
+  setActiveNav(titles[route] ? route : "globe");
+
+  if (route === "globe") {
+    root.classList.add("is-hidden");
+    root.innerHTML = "";
+    try {
+      await showGlobe();
+    } catch (error) {
+      root.classList.remove("is-hidden");
+      root.innerHTML = `<p class="empty">${error.message}</p>`;
+    }
+    await pingApi();
+    return;
+  }
+
+  hideGlobe();
+  root.classList.remove("is-hidden");
   root.innerHTML = `<p class="muted">Загрузка…</p>`;
 
   try {

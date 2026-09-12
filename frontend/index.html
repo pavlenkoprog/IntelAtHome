@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PalantirAtHome</title>
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="/css/app.css" />
   </head>
   <body>
@@ -17,6 +18,7 @@
           </div>
         </div>
         <nav class="nav">
+          <a href="#/globe" data-route="globe">Глобус</a>
           <a href="#/dashboard" data-route="dashboard">Обзор</a>
           <a href="#/investigations" data-route="investigations">Расследования</a>
           <a href="#/entities" data-route="entities">Сущности</a>
@@ -25,12 +27,19 @@
       </aside>
       <div class="workspace">
         <header class="topbar">
-          <h1 id="page-title">Обзор</h1>
+          <h1 id="page-title">Глобус</h1>
           <span id="api-status" class="status">API…</span>
         </header>
-        <main id="app" class="content"></main>
+        <div class="workspace-body">
+          <div id="globeRoot" class="globe-root">
+            <div id="cesiumContainer" class="globe-canvas"></div>
+            <div id="globeHud" class="globe-hud">Загрузка глобуса…</div>
+          </div>
+          <main id="app" class="content is-hidden"></main>
+        </div>
       </div>
     </div>
+    <script src="/vendor/leaflet/leaflet.js"></script>
     <script type="module" src="/js/app.js"></script>
   </body>
 </html>
