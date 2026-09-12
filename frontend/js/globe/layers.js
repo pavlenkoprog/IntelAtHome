@@ -28,9 +28,6 @@ const COLORS = {
 const timers = {};
 
 export function attachLayers(map) {
-  map.createPane("fxPane");
-  map.getPane("fxPane").style.zIndex = 215;
-  map.getPane("fxPane").style.pointerEvents = "none";
   map.createPane("weatherPane");
   map.getPane("weatherPane").style.zIndex = 520;
   map.createPane("weatherOverlayPane");

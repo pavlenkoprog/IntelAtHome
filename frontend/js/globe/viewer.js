@@ -27,7 +27,7 @@ export async function showGlobe() {
       zoomControl: true,
     }).setView([30, 20], 3);
     attachLayers(map);
-    attachLooks(root, hud, map);
+    attachLooks(root, hud);
     attachCursorMeta(map, root);
   }
 
