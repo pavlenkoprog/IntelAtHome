@@ -1,6 +1,7 @@
 export const LOOKS = [
   { id: "normal", key: "1", label: "NORMAL" },
   { id: "crt", key: "2", label: "CRT" },
+  { id: "noir", key: "3", label: "NOIR" },
 ];
 
 let current = "crt";
@@ -53,6 +54,6 @@ function applyLook(id, root, hud) {
     button.classList.toggle("is-active", button.dataset.look === id);
   });
   if (hud && active) {
-    hud.textContent = `Сенсор: ${active.label} · клавиши 1–2`;
+    hud.textContent = `Сенсор: ${active.label} · клавиши 1–3`;
   }
 }
