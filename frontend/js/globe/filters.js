@@ -1,20 +1,14 @@
 export const LOOKS = [
   { id: "normal", key: "1", label: "NORMAL" },
   { id: "crt", key: "2", label: "CRT" },
-  { id: "nvg", key: "3", label: "NVG" },
-  { id: "flir", key: "4", label: "FLIR" },
-  { id: "anime", key: "5", label: "ANIME" },
-  { id: "noir", key: "6", label: "NOIR" },
-  { id: "snow", key: "7", label: "SNOW" },
 ];
 
-let current = "normal";
+let current = "crt";
 let bound = false;
 
 export function attachLooks(root, hud) {
-  root.classList.add("look-normal");
   renderBar(root);
-  applyLook("normal", root, hud);
+  applyLook("crt", root, hud);
 
   if (bound) {
     return;
@@ -59,6 +53,6 @@ function applyLook(id, root, hud) {
     button.classList.toggle("is-active", button.dataset.look === id);
   });
   if (hud && active) {
-    hud.textContent = `Сенсор: ${active.label} · клавиши 1–7`;
+    hud.textContent = `Сенсор: ${active.label} · клавиши 1–2`;
   }
 }
