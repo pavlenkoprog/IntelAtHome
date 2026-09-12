@@ -9,6 +9,7 @@ USGS_QUAKES = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day
 EONET_EVENTS = "https://eonet.gsfc.nasa.gov/api/v3/events"
 OPENSKY_STATES = "https://opensky-network.org/api/states/all"
 ADSB_LOL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}"
+ADSB_MIL = "https://api.adsb.lol/v2/mil"
 LAUNCHES = "https://ll.thespacedevs.com/2.2.0/launch/upcoming/?limit=20"
 NE_PLACES = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson"
 OPENFLIGHTS = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
@@ -164,11 +165,23 @@ def launches() -> dict:
     return _cached("launches", 300, load)
 
 
+def _military_hexes() -> set[str]:
+    def load():
+        raw = _get_json(ADSB_MIL, timeout=12.0)
+        return {str(ac.get("hex", "")).lower() for ac in (raw.get("ac") or []) if ac.get("hex")}
+
+    try:
+        return set(_cached("mil-hexes", 300, load))
+    except httpx.HTTPError:
+        return set()
+
+
 def flights(south: float, west: float, north: float, east: float) -> dict:
     if north <= south or abs(north - south) > 80 or abs(east - west) > 120:
         return {"items": [], "source": "OpenSky", "reason": "bbox_too_large"}
 
     key = f"flights:{south:.1f}:{west:.1f}:{north:.1f}:{east:.1f}"
+    military = _military_hexes()
 
     def load():
         try:
@@ -181,15 +194,18 @@ def flights(south: float, west: float, north: float, east: float) -> dict:
             for state in (raw.get("states") or [])[:400]:
                 if not state or state[6] is None or state[5] is None:
                     continue
+                icao = str(state[0] or "").lower()
                 items.append(
                     {
-                        "id": state[0],
+                        "id": icao,
                         "name": (state[1] or state[0] or "Flight").strip(),
                         "kind": "flight",
                         "lat": state[6],
                         "lon": state[5],
                         "altitude": state[7],
+                        "heading": state[10],
                         "country": state[2],
+                        "military": icao in military,
                     }
                 )
             return {"items": items, "source": "OpenSky"}
@@ -202,15 +218,18 @@ def flights(south: float, west: float, north: float, east: float) -> dict:
             for ac in (raw.get("ac") or [])[:400]:
                 if ac.get("lat") is None or ac.get("lon") is None:
                     continue
+                icao = str(ac.get("hex") or "").lower()
                 items.append(
                     {
-                        "id": ac.get("hex"),
-                        "name": ac.get("flight") or ac.get("r") or ac.get("hex") or "Flight",
+                        "id": icao,
+                        "name": ac.get("flight") or ac.get("r") or icao or "Flight",
                         "kind": "flight",
                         "lat": ac.get("lat"),
                         "lon": ac.get("lon"),
                         "altitude": ac.get("alt_baro"),
+                        "heading": ac.get("track"),
                         "country": None,
+                        "military": bool(ac.get("mil")) or icao in military,
                     }
                 )
             return {"items": items, "source": "adsb.lol"}
@@ -233,8 +252,9 @@ def places(south: float, west: float, north: float, east: float, zoom: int) -> d
     items = [
         item
         for item in _natural_earth_cities()
-        if _in_bbox(item["lat"], item["lon"], south, west, north, east)
-        and (zoom >= 6 or item["kind"] == "city")
+        if item["kind"] != "city"
+        and zoom >= 6
+        and _in_bbox(item["lat"], item["lon"], south, west, north, east)
     ]
     if zoom >= 6:
         items.extend(

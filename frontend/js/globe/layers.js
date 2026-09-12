@@ -7,6 +7,9 @@ const ESRI_LABELS =
 const ESRI_ROADS =
   "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}";
 const OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const PLANE_CIVIL = "/vendor/leaflet/images/plane_w.png";
+const PLANE_MILITARY = "/vendor/leaflet/images/plane_r.png";
+const PLANE_SIZE = 24;
 
 const COLORS = {
   city: "#f0a202",
@@ -47,6 +50,7 @@ export function attachLayers(map) {
   quakes.addTo(map);
   events.addTo(map);
   places.addTo(map);
+  flights.addTo(map);
 
   window.L.control
     .layers(
@@ -162,16 +166,36 @@ function bindBBoxLayer(map, layer, key, loader, intervalMs, minZoom) {
 function renderItems(layer, items) {
   layer.clearLayers();
   for (const item of items) {
-    const marker = window.L.circleMarker([item.lat, item.lon], {
-      radius: radiusFor(item),
-      color: COLORS[item.kind] || "#f0a202",
-      weight: 1,
-      fillOpacity: 0.85,
-    });
+    if (item.kind === "city") {
+      continue;
+    }
+    const marker =
+      item.kind === "flight" ? planeMarker(item) : circleMarker(item);
     marker.bindPopup(popupHtml(item));
     marker.bindTooltip(item.name, { direction: "top", opacity: 0.9 });
     marker.addTo(layer);
   }
+}
+
+function circleMarker(item) {
+  return window.L.circleMarker([item.lat, item.lon], {
+    radius: radiusFor(item),
+    color: COLORS[item.kind] || "#f0a202",
+    weight: 1,
+    fillOpacity: 0.85,
+  });
+}
+
+function planeMarker(item) {
+  const heading = Number(item.heading) || 0;
+  const src = item.military ? PLANE_MILITARY : PLANE_CIVIL;
+  const icon = window.L.divIcon({
+    className: "plane-marker",
+    iconSize: [PLANE_SIZE, PLANE_SIZE],
+    iconAnchor: [PLANE_SIZE / 2, PLANE_SIZE / 2],
+    html: `<img src="${src}" alt="" style="transform:rotate(${heading}deg)">`,
+  });
+  return window.L.marker([item.lat, item.lon], { icon, keyboard: false });
 }
 
 function radiusFor(item) {
@@ -189,7 +213,8 @@ function radiusFor(item) {
 
 function popupHtml(item) {
   const rows = Object.entries({
-    Тип: item.kind,
+    Тип: item.kind === "flight" ? (item.military ? "военный" : "гражданский") : item.kind,
+    Курс: item.heading,
     Категория: item.category,
     Магнитуда: item.magnitude,
     Высота: item.altitude,
