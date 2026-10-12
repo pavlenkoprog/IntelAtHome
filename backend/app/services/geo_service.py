@@ -662,8 +662,6 @@ def _refresh_radar_snapshot() -> None:
     log.info("radar snapshot %s", data.get("rain_url"))
 
 
-_SATELLITES: dict | None = None
-_SATELLITE_LOCK = threading.Lock()
 _SATELLITE_LOOP_STARTED = False
 
 
@@ -731,19 +729,18 @@ def _parse_satellites(raw: Any) -> list[dict]:
     return parsed
 
 
-def _remember_satellites(payload: dict) -> dict:
-    global _SATELLITES
-    data = {**payload, "updated": time.time()}
-    with _SATELLITE_LOCK:
-        _SATELLITES = data
-    return data
-
-
 def refresh_satellites() -> None:
     raw = _get_json(SATELLITES_URL, timeout=20.0)
     items = _parse_satellites(raw)
-    _remember_satellites({"items": items, "source": "CelesTrak"})
-    log.info("satellites %s", len(items))
+    _put_store("satellites", {"items": items, "source": "CelesTrak"})
+    log.info("satellites %s saved", len(items))
+
+
+def satellites() -> dict:
+    snap = _get_store("satellites")
+    if snap and isinstance(snap.get("items"), list):
+        return {"items": snap["items"], "source": snap.get("source") or "CelesTrak"}
+    return {"items": [], "source": "CelesTrak", "reason": "warming"}
 
 
 def start_satellite_loop() -> None:

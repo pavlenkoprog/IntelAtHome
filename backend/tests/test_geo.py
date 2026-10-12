@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 from app.services.geo_service import (
@@ -15,6 +17,7 @@ from app.services.geo_service import (
     flights,
     places,
     radar_tile_url,
+    satellites,
     sample_weather_grid,
     weather_field,
     weather_radar,
@@ -502,3 +505,47 @@ def test_parse_satellites_keeps_known_groups() -> None:
     assert items[0]["norad"] == 31797
     assert items[0]["altitude"] == 375.1
     assert items[1]["group"] == "recon"
+
+
+def test_satellites_reads_saved_snapshot() -> None:
+    _STORE.clear()
+    _put_store(
+        "satellites",
+        {
+            "items": [
+                {
+                    "id": "31797",
+                    "name": "SAR-LUPE 2",
+                    "kind": "satellite",
+                    "group": "military",
+                    "lat": 14.1,
+                    "lon": 89.5,
+                }
+            ],
+            "source": "CelesTrak",
+        },
+    )
+    data = satellites()
+    assert data["source"] == "CelesTrak"
+    assert data["items"][0]["name"] == "SAR-LUPE 2"
+    assert "reason" not in data
+
+
+def test_satellites_warming_without_snapshot() -> None:
+    _STORE.clear()
+    data = satellites()
+    assert data["items"] == []
+    assert data["reason"] == "warming"
+
+
+def test_satellite_snapshot_is_written(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr("app.services.geo_service.SNAPSHOT_DIR", tmp_path)
+    _put_store(
+        "satellites",
+        {"items": [{"id": "31797", "name": "SAR-LUPE 2"}], "source": "CelesTrak"},
+    )
+    saved = json.loads((tmp_path / "satellites.json").read_text(encoding="utf-8"))
+    assert saved["source"] == "CelesTrak"
+    assert saved["items"][0]["name"] == "SAR-LUPE 2"
+    assert "updated" in saved
