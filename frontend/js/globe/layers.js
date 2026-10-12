@@ -644,6 +644,7 @@ function renderStorms(source, items) {
         image,
         width: 22,
         height: 28,
+        heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
         disableDepthTestDistance: 40000,
       },
     });
@@ -762,6 +763,7 @@ function cameraEntity(item, zoom) {
       image: cameraIcon(),
       width: size,
       height: Math.round(size * 0.82),
+      heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
       verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
       scaleByDistance: new Cesium.NearFarScalar(4.0e5, 1.0, 1.8e7, 2.4),
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
@@ -945,12 +947,13 @@ function pointEntity(item) {
   return {
     name: item.name,
     description: popupHtml(item),
-    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 1200),
+    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 80),
     point: {
       pixelSize: radiusFor(item) * 1.6,
       color: Cesium.Color.fromCssColorString(color),
       outlineColor: Cesium.Color.BLACK.withAlpha(0.55),
       outlineWidth: 1,
+      heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
       disableDepthTestDistance: 25000,
     },
   };

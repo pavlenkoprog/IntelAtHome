@@ -97,7 +97,7 @@ function createViewer(container) {
   controller.enableCollisionDetection = true;
 
   viewer.camera.setView(globeHomeView());
-  loadKeylessTerrain(viewer);
+  loadRelief(viewer);
 
   viewer.homeButton.viewModel.command.beforeExecute.addEventListener((event) => {
     event.cancel = true;
@@ -107,18 +107,31 @@ function createViewer(container) {
   return viewer;
 }
 
-function loadKeylessTerrain(viewer) {
+const RELIEF_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid";
+
+function loadRelief(viewer) {
   const Cesium = window.Cesium;
-  if (!Cesium.CesiumTerrainProvider?.fromUrl) {
+  if (!Cesium.CesiumTerrainProvider?.fromUrl || !Cesium.Terrain || !viewer.scene.setTerrain) {
     return;
   }
-  Cesium.CesiumTerrainProvider.fromUrl("https://terrain.reearth.land/cesium-mesh/ellipsoid")
-    .then((provider) => {
-      viewer.terrainProvider = provider;
-    })
-    .catch(() => {
-      /* остаёмся на эллипсоиде */
-    });
+
+  // «ellipsoid» здесь — высоты над эллипсоидом WGS84 (Mapterhorn + EGM2008), не плоский шар.
+  const terrain = new Cesium.Terrain(
+    Cesium.CesiumTerrainProvider.fromUrl(RELIEF_URL, {
+      requestVertexNormals: true,
+      requestWaterMask: true,
+    }),
+  );
+  viewer.scene.setTerrain(terrain);
+  terrain.readyEvent.addEventListener(() => {
+    if (viewer.isDestroyed()) {
+      return;
+    }
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+  });
+  terrain.errorEvent.addEventListener((error) => {
+    console.warn("relief unavailable", error);
+  });
 }
 
 function setHud(hud, text) {
