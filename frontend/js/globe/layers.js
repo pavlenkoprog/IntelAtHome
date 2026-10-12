@@ -915,7 +915,6 @@ function satellitePopup(item) {
   const heading = Number(item.heading);
   const rows = [
     ["Группа", item.group === "military" ? "военный" : "гражданский"],
-    ["NORAD", item.norad],
     ["Высота", Number.isFinite(alt) ? `${Math.round(alt)} км` : ""],
     ["Скорость", Number.isFinite(speed) ? `${(speed / 1000).toFixed(2)} км/с` : ""],
     ["Курс", Number.isFinite(heading) ? `${Math.round(heading)}°` : ""],
@@ -923,7 +922,15 @@ function satellitePopup(item) {
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([label, value]) => `<div><span class="muted">${label}:</span> ${escapeHtml(value)}</div>`)
     .join("");
-  return `<strong>${escapeHtml(item.name)}</strong>${rows}<div class="muted">CelesTrak</div>`;
+  return `<strong>${escapeHtml(item.name)}</strong>${satelliteNoradHtml(item.norad)}${rows}<div class="muted">CelesTrak</div>`;
+}
+
+function satelliteNoradHtml(norad) {
+  if (norad === undefined || norad === null || norad === "") {
+    return "";
+  }
+  const id = encodeURIComponent(norad);
+  return `<div><span class="muted">NORAD:</span> <a href="https://orbitalradar.com/satellite/${id}" target="_blank" rel="noopener noreferrer">${escapeHtml(norad)}</a></div>`;
 }
 
 function pointEntity(item) {
