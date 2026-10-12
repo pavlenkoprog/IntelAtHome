@@ -298,10 +298,10 @@ function bindSatelliteLayers(viewer, military, recon) {
       warming = 0;
       const items = data.items || [];
       if (military.show) {
-        renderSatellites(military, items.filter((item) => item.group === "military"));
+        renderSatellites(viewer, military, items.filter((item) => item.group === "military"));
       }
       if (recon.show) {
-        renderSatellites(recon, items.filter((item) => item.group === "recon"));
+        renderSatellites(viewer, recon, items.filter((item) => item.group === "recon"));
       }
     } catch {
       /* слой остаётся прежним */
@@ -770,33 +770,141 @@ function cameraEntity(item, zoom) {
   };
 }
 
-function renderSatellites(source, items) {
+function renderSatellites(viewer, source, items) {
   source.entities.removeAll();
   for (const item of items) {
     source.entities.add(satelliteEntity(item));
+    if (Number.isFinite(Number(item.heading))) {
+      source.entities.add(satelliteArrowEntity(viewer, item));
+    }
   }
 }
 
-function satelliteEntity(item) {
+function satelliteScale() {
+  return new window.Cesium.NearFarScalar(1.5e6, 1.0, 4.2e7, 0.55);
+}
+
+function satellitePlacement(item) {
   const Cesium = window.Cesium;
   const altKm = Number(item.altitude);
   const meters = Number.isFinite(altKm) ? altKm * 1000 : 400000;
-  const heading = Number(item.heading) || 0;
-  const color = item.group === "military" ? COLORS.satelliteMilitary : COLORS.satelliteRecon;
-  const position = Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters);
-  const normal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(position);
+  const css = item.group === "military" ? COLORS.satelliteMilitary : COLORS.satelliteRecon;
+  return {
+    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters),
+    color: Cesium.Color.fromCssColorString(css),
+  };
+}
+
+let satelliteArrowImage = null;
+
+function satelliteArrowCanvas() {
+  if (satelliteArrowImage) {
+    return satelliteArrowImage;
+  }
+  const icon = SATELLITE_SIZE;
+  const span = Math.ceil(icon * 3);
+  const canvas = document.createElement("canvas");
+  canvas.width = span;
+  canvas.height = span;
+  const ctx = canvas.getContext("2d");
+  const cx = span / 2;
+  const cy = span / 2;
+  const tip = cy - icon * 1.28;
+  const head = Math.max(4, icon * 0.42);
+  const headW = head * 0.62;
+  const base = cy - icon * 0.62;
+  const shaftEnd = tip + head * 0.7;
+
+  const shaft = (color, width) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx, base);
+    ctx.lineTo(cx, shaftEnd);
+    ctx.stroke();
+  };
+  const headPath = (y, h, w) => {
+    ctx.beginPath();
+    ctx.moveTo(cx, y);
+    ctx.lineTo(cx - w, y + h);
+    ctx.lineTo(cx + w, y + h);
+    ctx.closePath();
+  };
+
+  shaft("#000", Math.max(2.6, icon * 0.2));
+  shaft("#fff", Math.max(1.4, icon * 0.1));
+  headPath(tip - 0.8, head + 1.6, headW + 1.1);
+  ctx.fillStyle = "#000";
+  ctx.fill();
+  headPath(tip, head, headW);
+  ctx.fillStyle = "#fff";
+  ctx.fill();
+
+  satelliteArrowImage = canvas;
+  return canvas;
+}
+
+function satelliteEntity(item) {
+  const { position, color } = satellitePlacement(item);
   return {
     name: item.name,
     description: satellitePopup(item),
     position,
     billboard: {
       image: SATELLITE_ICON,
-      color: Cesium.Color.fromCssColorString(color),
+      color,
       width: SATELLITE_SIZE,
       height: SATELLITE_SIZE,
-      alignedAxis: normal,
-      rotation: Cesium.Math.toRadians(-heading),
-      scaleByDistance: new Cesium.NearFarScalar(1.5e6, 1.0, 4.2e7, 0.55),
+      scaleByDistance: satelliteScale(),
+    },
+  };
+}
+
+function offsetByHeading(position, headingDeg, meters) {
+  const Cesium = window.Cesium;
+  const heading = Cesium.Math.toRadians(headingDeg);
+  const frame = Cesium.Transforms.eastNorthUpToFixedFrame(position);
+  const east = Math.sin(heading) * meters;
+  const north = Math.cos(heading) * meters;
+  return Cesium.Matrix4.multiplyByPoint(frame, new Cesium.Cartesian3(east, north, 0), new Cesium.Cartesian3());
+}
+
+function courseScreenRotation(viewer, origin, headingDeg) {
+  const Cesium = window.Cesium;
+  const ahead = offsetByHeading(origin, headingDeg, 1000);
+  const start = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, origin);
+  const end = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, ahead);
+  if (!start || !end) {
+    return null;
+  }
+  return -Math.atan2(end.x - start.x, -(end.y - start.y));
+}
+
+function satelliteArrowEntity(viewer, item) {
+  const Cesium = window.Cesium;
+  const { position, color } = satellitePlacement(item);
+  const span = Math.ceil(SATELLITE_SIZE * 3);
+  const heading = Number(item.heading);
+  let rotation = 0;
+  return {
+    name: item.name,
+    description: satellitePopup(item),
+    position,
+    billboard: {
+      image: satelliteArrowCanvas(),
+      color,
+      width: span,
+      height: span,
+      rotation: new Cesium.CallbackProperty(() => {
+        const next = courseScreenRotation(viewer, position, heading);
+        if (next != null) {
+          rotation = next;
+        }
+        return rotation;
+      }, false),
+      scaleByDistance: satelliteScale(),
+      eyeOffset: new Cesium.Cartesian3(0, 0, -20),
     },
   };
 }
