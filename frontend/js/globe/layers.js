@@ -9,8 +9,7 @@ const ESRI_LABELS =
 const ESRI_ROADS =
   "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer";
 const OSM_TILES = "https://tile.openstreetmap.org/";
-const PLANE_CIVIL = "/vendor/leaflet/images/plane_w.png";
-const PLANE_MILITARY = "/vendor/leaflet/images/plane_r.png";
+const PLANE_ICON = "/vendor/leaflet/images/plane_w.png";
 const SATELLITE_ICON = "/vendor/leaflet/images/satellite_negate.png";
 const SATELLITE_SIZE = 20;
 const PLANE_SIZE_BASE = 20;
@@ -960,7 +959,7 @@ function pointEntity(item) {
 function planeEntity(viewer, item, zoom) {
   const Cesium = window.Cesium;
   const size = planeSize(zoom);
-  const src = item.military ? PLANE_MILITARY : PLANE_CIVIL;
+  const css = item.military ? COLORS.satelliteMilitary : COLORS.satelliteRecon;
   const alt = Number(item.altitude);
   const meters = Number.isFinite(alt) && alt > 0 ? (alt > 20000 ? alt * 0.3048 : alt) : 9000;
   const position = Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters);
@@ -969,7 +968,8 @@ function planeEntity(viewer, item, zoom) {
     description: popupHtml(item),
     position,
     billboard: {
-      image: src,
+      image: PLANE_ICON,
+      color: Cesium.Color.fromCssColorString(css),
       width: size,
       height: size,
       rotation: courseRotationProperty(viewer, position, Number(item.heading) || 0),
