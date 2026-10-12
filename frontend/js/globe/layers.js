@@ -261,7 +261,7 @@ function bindLiveLayer(viewer, source, key, loader, intervalMs) {
     }
     try {
       const data = await loader();
-      renderItems(source, data.items || [], cameraZoom(viewer));
+      renderItems(viewer, source, data.items || [], cameraZoom(viewer));
     } catch {
       /* слой остаётся прежним */
     }
@@ -389,7 +389,7 @@ function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounc
       }
       retry = 0;
       const items = data.items || [];
-      renderItems(source, items, zoom);
+      renderItems(viewer, source, items, zoom);
       lastOk = Date.now();
       if (debug) {
         console.log(`[${key}] loaded ${reason}`, {
@@ -694,14 +694,14 @@ function planeSize(zoom) {
   return Math.max(6, Math.min(32, Math.round(PLANE_SIZE_BASE * 1.2 ** (zoom - 7))));
 }
 
-function renderItems(source, items, zoom) {
+function renderItems(viewer, source, items, zoom) {
   source.entities.removeAll();
   for (const item of items) {
     if (item.kind === "city") {
       continue;
     }
     if (item.kind === "flight") {
-      source.entities.add(planeEntity(item, zoom));
+      source.entities.add(planeEntity(viewer, item, zoom));
     } else if (item.kind === "camera") {
       source.entities.add(cameraEntity(item, zoom));
     } else {
@@ -881,12 +881,22 @@ function courseScreenRotation(viewer, origin, headingDeg) {
   return -Math.atan2(end.x - start.x, -(end.y - start.y));
 }
 
+function courseRotationProperty(viewer, position, headingDeg) {
+  const Cesium = window.Cesium;
+  let rotation = 0;
+  return new Cesium.CallbackProperty(() => {
+    const next = courseScreenRotation(viewer, position, headingDeg);
+    if (next != null) {
+      rotation = next;
+    }
+    return rotation;
+  }, false);
+}
+
 function satelliteArrowEntity(viewer, item) {
   const Cesium = window.Cesium;
   const { position, color } = satellitePlacement(item);
   const span = Math.ceil(SATELLITE_SIZE * 3);
-  const heading = Number(item.heading);
-  let rotation = 0;
   return {
     name: item.name,
     description: satellitePopup(item),
@@ -896,13 +906,7 @@ function satelliteArrowEntity(viewer, item) {
       color,
       width: span,
       height: span,
-      rotation: new Cesium.CallbackProperty(() => {
-        const next = courseScreenRotation(viewer, position, heading);
-        if (next != null) {
-          rotation = next;
-        }
-        return rotation;
-      }, false),
+      rotation: courseRotationProperty(viewer, position, Number(item.heading)),
       scaleByDistance: satelliteScale(),
       eyeOffset: new Cesium.Cartesian3(0, 0, -20),
     },
@@ -953,15 +957,13 @@ function pointEntity(item) {
   };
 }
 
-function planeEntity(item, zoom) {
+function planeEntity(viewer, item, zoom) {
   const Cesium = window.Cesium;
-  const heading = Number(item.heading) || 0;
   const size = planeSize(zoom);
   const src = item.military ? PLANE_MILITARY : PLANE_CIVIL;
   const alt = Number(item.altitude);
   const meters = Number.isFinite(alt) && alt > 0 ? (alt > 20000 ? alt * 0.3048 : alt) : 9000;
   const position = Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters);
-  const normal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(position);
   return {
     name: item.name,
     description: popupHtml(item),
@@ -970,8 +972,7 @@ function planeEntity(item, zoom) {
       image: src,
       width: size,
       height: size,
-      alignedAxis: normal,
-      rotation: Cesium.Math.toRadians(-heading),
+      rotation: courseRotationProperty(viewer, position, Number(item.heading) || 0),
       disableDepthTestDistance: 20000,
     },
   };
