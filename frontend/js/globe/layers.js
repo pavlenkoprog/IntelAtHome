@@ -11,7 +11,9 @@ const ESRI_ROADS =
 const OSM_TILES = "https://tile.openstreetmap.org/";
 const PLANE_CIVIL = "/vendor/leaflet/images/plane_w.png";
 const PLANE_MILITARY = "/vendor/leaflet/images/plane_r.png";
-const PLANE_SIZE_BASE = 12;
+const SATELLITE_ICON = "/vendor/leaflet/images/satellite_negate.png";
+const SATELLITE_SIZE = 20;
+const PLANE_SIZE_BASE = 20;
 
 const COLORS = {
   city: "#f0a202",
@@ -25,8 +27,8 @@ const COLORS = {
   event: "#fb7185",
   flight: "#3dd68c",
   camera: "#6be8ff",
-  satelliteMilitary: "#3b82f6",
-  satelliteRecon: "#f97316",
+  satelliteMilitary: "#f97316",
+  satelliteRecon: "#38bdf8",
 };
 
 const EVENT_COLORS = {
@@ -193,7 +195,7 @@ function attachLayerControl(root, bases, overlays) {
     ["flights", "Самолёты"],
     ["cameras", "Камеры"],
     ["satMilitary", "Спутники: военные"],
-    ["satRecon", "Спутники: разведка"],
+    ["satRecon", "Спутники: гражданские"],
     ["rain", "Осадки"],
     ["clouds", "Облачность"],
     ["storms", "Грозы"],
@@ -779,17 +781,22 @@ function satelliteEntity(item) {
   const Cesium = window.Cesium;
   const altKm = Number(item.altitude);
   const meters = Number.isFinite(altKm) ? altKm * 1000 : 400000;
+  const heading = Number(item.heading) || 0;
   const color = item.group === "military" ? COLORS.satelliteMilitary : COLORS.satelliteRecon;
+  const position = Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters);
+  const normal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(position);
   return {
     name: item.name,
     description: satellitePopup(item),
-    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters),
-    point: {
-      pixelSize: 8,
+    position,
+    billboard: {
+      image: SATELLITE_ICON,
       color: Cesium.Color.fromCssColorString(color),
-      outlineColor: Cesium.Color.WHITE.withAlpha(0.9),
-      outlineWidth: 1,
-      scaleByDistance: new Cesium.NearFarScalar(1.5e6, 1.5, 4.2e7, 0.65),
+      width: SATELLITE_SIZE,
+      height: SATELLITE_SIZE,
+      alignedAxis: normal,
+      rotation: Cesium.Math.toRadians(-heading),
+      scaleByDistance: new Cesium.NearFarScalar(1.5e6, 1.0, 4.2e7, 0.55),
     },
   };
 }
@@ -799,7 +806,7 @@ function satellitePopup(item) {
   const speed = Number(item.speed);
   const heading = Number(item.heading);
   const rows = [
-    ["Группа", item.group === "military" ? "военные" : "разведка"],
+    ["Группа", item.group === "military" ? "военный" : "гражданский"],
     ["NORAD", item.norad],
     ["Высота", Number.isFinite(alt) ? `${Math.round(alt)} км` : ""],
     ["Скорость", Number.isFinite(speed) ? `${(speed / 1000).toFixed(2)} км/с` : ""],
