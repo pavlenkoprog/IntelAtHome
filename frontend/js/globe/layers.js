@@ -340,19 +340,19 @@ function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounc
   let pending = null;
   let retry = 0;
   let lastOk = 0;
-  const debug = key === "flights";
+  const debug = key === "cameras";
   const refresh = async (reason = "unknown") => {
     if (inflight) {
       pending = reason === "interval" ? pending || reason : reason;
       if (debug) {
-        console.log(`[flights] queue ${reason}`);
+        console.log(`[${key}] queue ${reason}`);
       }
       return;
     }
     const zoom = cameraZoom(viewer);
     if (!source.show || zoom < minZoom) {
       if (debug) {
-        console.log(`[flights] skip ${reason}`, { zoom, minZoom, layerOn: source.show });
+        console.log(`[${key}] skip ${reason}`, { zoom, minZoom, layerOn: source.show });
       }
       if (zoom < minZoom) {
         source.entities.removeAll();
@@ -361,14 +361,14 @@ function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounc
     }
     if (reason === "interval" && Date.now() - lastOk < 8000) {
       if (debug) {
-        console.log("[flights] skip interval, just loaded");
+        console.log(`[${key}] skip interval, just loaded`);
       }
       return;
     }
     const bbox = viewBBox(viewer);
     const id = ++requestId;
     if (debug) {
-      console.log(`[flights] request ${reason}`, { id, zoom, bbox });
+      console.log(`[${key}] request ${reason}`, { id, zoom, bbox });
     }
     inflight = true;
     try {
@@ -378,7 +378,7 @@ function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounc
       }
       if (data.reason && !(data.items || []).length) {
         if (debug) {
-          console.log(`[flights] empty ${reason}`, { id, source: data.source, reason: data.reason });
+          console.log(`[${key}] empty ${reason}`, { id, source: data.source, reason: data.reason });
         }
         if (reason !== "retry" && retry < 2) {
           pending = pending || "retry";
@@ -390,16 +390,17 @@ function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounc
       renderItems(source, items, zoom);
       lastOk = Date.now();
       if (debug) {
-        console.log(`[flights] loaded ${reason}`, {
+        console.log(`[${key}] loaded ${reason}`, {
           id,
           count: items.length,
           source: data.source,
           markers: source.entities.values.length,
+          cities: countBy(items, "city"),
         });
       }
     } catch (error) {
       if (debug) {
-        console.warn(`[flights] error ${reason}`, error);
+        console.warn(`[${key}] error ${reason}`, error);
       }
     } finally {
       inflight = false;
@@ -433,11 +434,20 @@ function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounc
       window.clearInterval(timers[key]);
     }
     if (debug) {
-      console.log("[flights] layer off");
+      console.log(`[${key}] layer off`);
     }
   };
   refresh("init");
   timers[key] = window.setInterval(() => refresh("interval"), intervalMs);
+}
+
+function countBy(items, field) {
+  const counts = {};
+  for (const item of items) {
+    const label = item[field] || item.source || "?";
+    counts[label] = (counts[label] || 0) + 1;
+  }
+  return counts;
 }
 
 function bindRadarLayer(viewer, rain, clouds) {
