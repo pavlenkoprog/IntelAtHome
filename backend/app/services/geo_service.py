@@ -60,6 +60,8 @@ CAMERA_IMAGE_PREFIXES = (
     "https://cwwp2.dot.ca.gov/",
 )
 CAMERA_BBOX_CAP = 150
+SATELLITES_URL = "https://dataengine.worldwideview.dev/data/surveillance_satellites"
+SATELLITE_INTERVAL = 15
 
 _CATALOGS: dict[str, list[dict]] = {}
 
@@ -660,6 +662,107 @@ def _refresh_radar_snapshot() -> None:
     log.info("radar snapshot %s", data.get("rain_url"))
 
 
+_SATELLITES: dict | None = None
+_SATELLITE_LOCK = threading.Lock()
+_SATELLITE_LOOP_STARTED = False
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _norad_id(value: Any) -> int | str | None:
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    text = str(value).strip()
+    return text or None
+
+
+def _satellite_rows(raw: Any) -> list:
+    if not isinstance(raw, dict):
+        return []
+    items = raw.get("items")
+    if isinstance(items, dict):
+        rows = items.get("satellites")
+        return rows if isinstance(rows, list) else []
+    if isinstance(items, list):
+        return items
+    return []
+
+
+def _parse_satellites(raw: Any) -> list[dict]:
+    parsed: list[dict] = []
+    for row in _satellite_rows(raw):
+        if not isinstance(row, dict):
+            continue
+        lat = _finite(row.get("latitude", row.get("lat")))
+        lon = _finite(row.get("longitude", row.get("lon")))
+        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        group = str(row.get("group") or "").strip().lower()
+        if group not in {"military", "recon"}:
+            continue
+        norad = _norad_id(row.get("noradId", row.get("norad_id")))
+        name = str(row.get("name") or norad or "Satellite").strip() or "Satellite"
+        parsed.append(
+            {
+                "id": str(norad or name),
+                "norad": norad,
+                "name": name,
+                "kind": "satellite",
+                "group": group,
+                "lat": lat,
+                "lon": lon,
+                "altitude": _finite(row.get("altitude")),
+                "heading": _finite(row.get("heading")),
+                "speed": _finite(row.get("speed")),
+            }
+        )
+    return parsed
+
+
+def _remember_satellites(payload: dict) -> dict:
+    global _SATELLITES
+    data = {**payload, "updated": time.time()}
+    with _SATELLITE_LOCK:
+        _SATELLITES = data
+    return data
+
+
+def refresh_satellites() -> None:
+    raw = _get_json(SATELLITES_URL, timeout=20.0)
+    items = _parse_satellites(raw)
+    _remember_satellites({"items": items, "source": "CelesTrak"})
+    log.info("satellites %s", len(items))
+
+
+def start_satellite_loop() -> None:
+    global _SATELLITE_LOOP_STARTED
+    if _SATELLITE_LOOP_STARTED or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _SATELLITE_LOOP_STARTED = True
+
+    def run() -> None:
+        while True:
+            try:
+                refresh_satellites()
+            except Exception as exc:
+                log.info("satellites fetch failed: %s", exc)
+            time.sleep(SATELLITE_INTERVAL)
+
+    threading.Thread(target=run, name="satellites", daemon=True).start()
+
+
 def refresh_snapshots() -> None:
     jobs = (
         ("earthquakes", lambda: _put_store("earthquakes", _load_earthquakes())),
@@ -693,6 +796,7 @@ def start_snapshot_loop() -> None:
 
     def run() -> None:
         _load_snapshots_from_disk()
+        start_satellite_loop()
         warmup_catalogs()
         refresh_snapshots()
         while True:

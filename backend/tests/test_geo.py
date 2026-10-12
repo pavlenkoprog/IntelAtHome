@@ -7,6 +7,7 @@ from app.services.geo_service import (
     _parse_adsb,
     _parse_caltrans_cameras,
     _parse_tfl_cameras,
+    _parse_satellites,
     _put_store,
     _spread_flights,
     camera_frame,
@@ -462,3 +463,42 @@ def test_camera_http_routes(client, monkeypatch) -> None:
     assert frame.headers["content-type"].startswith("image/jpeg")
     assert frame.headers.get("cache-control") == "no-store"
     assert client.get("/api/v1/geo/cameras/missing/frame").status_code == 404
+
+
+def test_parse_satellites_keeps_known_groups() -> None:
+    items = _parse_satellites(
+        {
+            "items": {
+                "satellites": [
+                    {
+                        "noradId": 31797,
+                        "name": "SAR-LUPE 2",
+                        "latitude": 14.1,
+                        "longitude": 89.5,
+                        "altitude": 375.1,
+                        "heading": 10,
+                        "speed": 7600,
+                        "group": "military",
+                    },
+                    {
+                        "noradId": 39084,
+                        "name": "LANDSAT 8",
+                        "latitude": 1,
+                        "longitude": 2,
+                        "altitude": 700,
+                        "heading": 180,
+                        "speed": 7500,
+                        "group": "recon",
+                    },
+                    {"noradId": 3, "name": "SKIP", "latitude": 1, "longitude": 2, "group": "starlink"},
+                    {"noradId": 4, "name": "BAD", "group": "military"},
+                ]
+            }
+        }
+    )
+    assert [item["name"] for item in items] == ["SAR-LUPE 2", "LANDSAT 8"]
+    assert items[0]["kind"] == "satellite"
+    assert items[0]["group"] == "military"
+    assert items[0]["norad"] == 31797
+    assert items[0]["altitude"] == 375.1
+    assert items[1]["group"] == "recon"
