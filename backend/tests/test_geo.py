@@ -538,6 +538,22 @@ def test_satellites_warming_without_snapshot() -> None:
     assert data["reason"] == "warming"
 
 
+def test_satellites_route_returns_snapshot() -> None:
+    from app.api.v1.routes.geo import get_satellites
+
+    _STORE.clear()
+    _put_store(
+        "satellites",
+        {
+            "items": [{"id": "39084", "name": "LANDSAT 8", "group": "recon"}],
+            "source": "CelesTrak",
+        },
+    )
+    data = get_satellites()
+    assert data["items"][0]["name"] == "LANDSAT 8"
+    assert data["source"] == "CelesTrak"
+
+
 def test_satellite_snapshot_is_written(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setattr("app.services.geo_service.SNAPSHOT_DIR", tmp_path)

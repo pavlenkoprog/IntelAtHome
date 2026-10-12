@@ -94,6 +94,11 @@ def get_camera_frame(camera_id: str) -> Response:
     return Response(content=body, media_type=content_type, headers={"Cache-Control": "no-store"})
 
 
+@router.get("/satellites")
+def get_satellites() -> dict:
+    return geo_service.satellites()
+
+
 @router.get("/places")
 def get_places(
     south: BBox,

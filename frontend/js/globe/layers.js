@@ -25,6 +25,8 @@ const COLORS = {
   event: "#fb7185",
   flight: "#3dd68c",
   camera: "#6be8ff",
+  satelliteMilitary: "#3b82f6",
+  satelliteRecon: "#f97316",
 };
 
 const EVENT_COLORS = {
@@ -79,6 +81,8 @@ export async function attachLayers(viewer, root) {
   const places = addSource(viewer, "places");
   const storms = addSource(viewer, "storms", false);
   const cameras = addSource(viewer, "cameras");
+  const satMilitary = addSource(viewer, "satellites-military");
+  const satRecon = addSource(viewer, "satellites-recon");
 
   const overlays = {
     labels,
@@ -88,6 +92,8 @@ export async function attachLayers(viewer, root) {
     events,
     flights,
     cameras,
+    satMilitary,
+    satRecon,
     rain,
     clouds,
     storms,
@@ -98,6 +104,7 @@ export async function attachLayers(viewer, root) {
   attachPicking(viewer, root);
 
   bindLiveLayer(viewer, quakes, "quakes", () => api.geo.earthquakes(), 600000);
+  bindSatelliteLayers(viewer, satMilitary, satRecon);
   bindLiveLayer(viewer, events, "events", () => api.geo.events(), 600000);
   bindBBoxLayer(viewer, flights, "flights", (bbox) => api.geo.flights(bbox), 600000, 5, 250);
   bindBBoxLayer(viewer, cameras, "cameras", (bbox) => api.geo.cameras(bbox), 180000, 0, 400);
@@ -185,6 +192,8 @@ function attachLayerControl(root, bases, overlays) {
     ["events", "События NASA"],
     ["flights", "Самолёты"],
     ["cameras", "Камеры"],
+    ["satMilitary", "Спутники: военные"],
+    ["satRecon", "Спутники: разведка"],
     ["rain", "Осадки"],
     ["clouds", "Облачность"],
     ["storms", "Грозы"],
@@ -267,6 +276,61 @@ function bindLiveLayer(viewer, source, key, loader, intervalMs) {
   };
   refresh();
   timers[key] = window.setInterval(refresh, intervalMs);
+}
+
+function bindSatelliteLayers(viewer, military, recon) {
+  let warming = 0;
+  const refresh = async () => {
+    if (!military.show && !recon.show) {
+      return;
+    }
+    try {
+      const data = await api.geo.satellites();
+      if (data.reason === "warming") {
+        if (warming < 8) {
+          warming += 1;
+          window.setTimeout(refresh, 2000);
+        }
+        return;
+      }
+      warming = 0;
+      const items = data.items || [];
+      if (military.show) {
+        renderSatellites(military, items.filter((item) => item.group === "military"));
+      }
+      if (recon.show) {
+        renderSatellites(recon, items.filter((item) => item.group === "recon"));
+      }
+    } catch {
+      /* слой остаётся прежним */
+    }
+  };
+  const arm = () => {
+    refresh();
+    if (!timers.satellites) {
+      timers.satellites = window.setInterval(refresh, 15000);
+    }
+  };
+  const disarm = () => {
+    if (military.show || recon.show) {
+      return;
+    }
+    if (timers.satellites) {
+      window.clearInterval(timers.satellites);
+      delete timers.satellites;
+    }
+  };
+  military.onShow = arm;
+  recon.onShow = arm;
+  military.onHide = () => {
+    military.entities.removeAll();
+    disarm();
+  };
+  recon.onHide = () => {
+    recon.entities.removeAll();
+    disarm();
+  };
+  arm();
 }
 
 function bindBBoxLayer(viewer, source, key, loader, intervalMs, minZoom, debounceMs = 750) {
@@ -692,6 +756,49 @@ function cameraEntity(item, zoom) {
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
   };
+}
+
+function renderSatellites(source, items) {
+  source.entities.removeAll();
+  for (const item of items) {
+    source.entities.add(satelliteEntity(item));
+  }
+}
+
+function satelliteEntity(item) {
+  const Cesium = window.Cesium;
+  const altKm = Number(item.altitude);
+  const meters = Number.isFinite(altKm) ? altKm * 1000 : 400000;
+  const color = item.group === "military" ? COLORS.satelliteMilitary : COLORS.satelliteRecon;
+  return {
+    name: item.name,
+    description: satellitePopup(item),
+    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters),
+    point: {
+      pixelSize: 8,
+      color: Cesium.Color.fromCssColorString(color),
+      outlineColor: Cesium.Color.WHITE.withAlpha(0.9),
+      outlineWidth: 1,
+      scaleByDistance: new Cesium.NearFarScalar(1.5e6, 1.5, 4.2e7, 0.65),
+    },
+  };
+}
+
+function satellitePopup(item) {
+  const alt = Number(item.altitude);
+  const speed = Number(item.speed);
+  const heading = Number(item.heading);
+  const rows = [
+    ["Группа", item.group === "military" ? "военные" : "разведка"],
+    ["NORAD", item.norad],
+    ["Высота", Number.isFinite(alt) ? `${Math.round(alt)} км` : ""],
+    ["Скорость", Number.isFinite(speed) ? `${(speed / 1000).toFixed(2)} км/с` : ""],
+    ["Курс", Number.isFinite(heading) ? `${Math.round(heading)}°` : ""],
+  ]
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => `<div><span class="muted">${label}:</span> ${escapeHtml(value)}</div>`)
+    .join("");
+  return `<strong>${escapeHtml(item.name)}</strong>${rows}<div class="muted">CelesTrak</div>`;
 }
 
 function pointEntity(item) {

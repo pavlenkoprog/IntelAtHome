@@ -43,6 +43,7 @@ export const api = {
     weatherRadar: () => request("/geo/weather/radar"),
     weather: (bbox) => request(`/geo/weather?${new URLSearchParams(bbox)}`),
     cameras: (bbox) => request(`/geo/cameras?${new URLSearchParams(bbox)}`),
+    satellites: () => request("/geo/satellites"),
     cameraFrame: (id) => `${API_BASE}/geo/cameras/${encodeURIComponent(id)}/frame`,
   },
 };

@@ -93,7 +93,7 @@ function createViewer(container) {
 
   const controller = viewer.scene.screenSpaceCameraController;
   controller.minimumZoomDistance = 200;
-  controller.maximumZoomDistance = 2.2e7;
+  controller.maximumZoomDistance = 4.6e7;
   controller.enableCollisionDetection = true;
 
   viewer.camera.setView(globeHomeView());
