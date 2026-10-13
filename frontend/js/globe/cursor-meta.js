@@ -10,14 +10,28 @@ export function attachCursorMeta(viewer, root) {
     chip = document.createElement("div");
     chip.id = "cursorMeta";
     chip.className = "cursor-meta";
-    chip.textContent = "снимок…";
     root.appendChild(chip);
   }
+  const shotEl = ensureChipLine(chip, "cursor-meta-shot", "снимок…");
+  const heightEl = ensureChipLine(chip, "cursor-meta-height", "");
+  heightEl.hidden = true;
 
-  let timer = 0;
+  let metaTimer = 0;
+  let heightTimer = 0;
   let requestId = 0;
+  let heightRequest = 0;
   let lastKey = "";
+  let heightKey = "";
   const Cesium = window.Cesium;
+
+  const applyHeight = (meters) => {
+    const line = formatElevation(meters);
+    if (!line) {
+      return;
+    }
+    heightEl.hidden = false;
+    heightEl.textContent = line;
+  };
 
   const moveChip = (event) => {
     const bounds = root.getBoundingClientRect();
@@ -35,34 +49,102 @@ export function attachCursorMeta(viewer, root) {
     lastKey = key;
     const id = ++requestId;
     try {
-      const data = await fetchImageryMeta(latlng.lat, latlng.lon, zoom);
+      const imagery = await fetchImageryMeta(latlng.lat, latlng.lon, zoom);
       if (id !== requestId) {
         return;
       }
-      chip.textContent = formatMeta(data);
+      shotEl.textContent = formatMeta(imagery);
     } catch {
       if (id === requestId) {
-        chip.textContent = "нет метаданных";
+        shotEl.textContent = "нет метаданных";
       }
     }
+  };
+
+  const loadHeight = async (latlng) => {
+    const key = `${latlng.lat.toFixed(4)}:${latlng.lon.toFixed(4)}`;
+    if (key === heightKey) {
+      return;
+    }
+    heightKey = key;
+    const id = ++heightRequest;
+    const meters = await sampleHeight(viewer, latlng.lat, latlng.lon);
+    if (id !== heightRequest) {
+      return;
+    }
+    if (meters == null) {
+      heightKey = "";
+      return;
+    }
+    applyHeight(meters);
   };
 
   const canvas = viewer.scene.canvas;
   canvas.addEventListener("mousemove", (event) => {
     const bounds = canvas.getBoundingClientRect();
     const windowPos = new Cesium.Cartesian2(event.clientX - bounds.left, event.clientY - bounds.top);
-    const latlng = pickLatLng(viewer, windowPos);
+    const latlng = pickLatLng(viewer, windowPos, true);
     moveChip(event);
     if (!latlng) {
-      chip.textContent = "космос";
+      lastKey = "";
+      heightKey = "";
+      shotEl.textContent = "космос";
+      heightEl.hidden = true;
       return;
     }
-    window.clearTimeout(timer);
-    timer = window.setTimeout(() => loadMeta(latlng), 140);
+    applyHeight(loadedHeight(viewer, latlng.lat, latlng.lon));
+    window.clearTimeout(metaTimer);
+    window.clearTimeout(heightTimer);
+    metaTimer = window.setTimeout(() => loadMeta(latlng), 140);
+    heightTimer = window.setTimeout(() => loadHeight(latlng), 80);
   });
   canvas.addEventListener("mouseleave", () => {
     chip.hidden = true;
   });
+}
+
+function ensureChipLine(chip, className, text) {
+  let line = chip.querySelector(`.${className}`);
+  if (!line) {
+    line = document.createElement("div");
+    line.className = className;
+    chip.append(line);
+  }
+  line.textContent = text;
+  return line;
+}
+
+function reliefProvider(viewer) {
+  const Cesium = window.Cesium;
+  const provider = viewer.terrainProvider;
+  if (!provider || provider instanceof Cesium.EllipsoidTerrainProvider) {
+    return null;
+  }
+  return provider;
+}
+
+function loadedHeight(viewer, lat, lon) {
+  const Cesium = window.Cesium;
+  if (!reliefProvider(viewer) || !viewer.scene?.globe?.getHeight) {
+    return null;
+  }
+  const height = viewer.scene.globe.getHeight(Cesium.Cartographic.fromDegrees(lon, lat));
+  return Number.isFinite(height) ? height : null;
+}
+
+async function sampleHeight(viewer, lat, lon) {
+  const Cesium = window.Cesium;
+  const provider = reliefProvider(viewer);
+  if (!provider || !Cesium.sampleTerrain) {
+    return null;
+  }
+  const level = Math.max(0, Math.min(12, Math.round(cameraZoom(viewer))));
+  try {
+    const [sampled] = await Cesium.sampleTerrain(provider, level, [Cesium.Cartographic.fromDegrees(lon, lat)]);
+    return Number.isFinite(sampled?.height) ? sampled.height : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchImageryMeta(lat, lon, zoom) {
@@ -124,6 +206,13 @@ function formatSrcDate(value) {
     return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
   }
   return text;
+}
+
+function formatElevation(meters) {
+  if (!Number.isFinite(meters)) {
+    return "";
+  }
+  return `высота ${Math.round(meters).toLocaleString("ru-RU")} м`;
 }
 
 function formatMeta(data) {

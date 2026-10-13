@@ -19,9 +19,16 @@ export function viewBBox(viewer) {
   };
 }
 
-export function pickLatLng(viewer, windowPosition) {
+export function pickLatLng(viewer, windowPosition, onSurface = false) {
   const Cesium = window.Cesium;
-  const cartesian = viewer.camera.pickEllipsoid(windowPosition, viewer.scene.globe.ellipsoid);
+  let cartesian = null;
+  if (onSurface) {
+    const ray = viewer.camera.getPickRay(windowPosition);
+    cartesian = ray && viewer.scene.globe.pick(ray, viewer.scene);
+  }
+  if (!cartesian) {
+    cartesian = viewer.camera.pickEllipsoid(windowPosition, viewer.scene.globe.ellipsoid);
+  }
   if (!cartesian) {
     return null;
   }
