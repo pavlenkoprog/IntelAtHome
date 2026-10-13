@@ -724,9 +724,13 @@ def _camera_catalog() -> tuple[list[dict], str]:
     return items, " / ".join(sources) or "TfL / Caltrans"
 
 
+OFFICIAL_CAMERA_SOURCES = {"TfL JamCam", "Caltrans"}
+
+
 def _public_camera(item: dict) -> dict:
     public = {key: value for key, value in item.items() if key != "image_url"}
     public["has_frame"] = bool(item.get("image_url"))
+    public["player"] = item.get("source") in OFFICIAL_CAMERA_SOURCES and public["has_frame"]
     return public
 
 

@@ -1016,7 +1016,15 @@ function cameraFrameHtml(item) {
     return "";
   }
   const src = api.geo.cameraFrame(item.id);
-  return `<img class="camera-frame" alt="${escapeHtml(item.name)}" data-src="${escapeHtml(src)}" src="${escapeHtml(src)}">`;
+  const frame = `<img class="camera-frame" alt="${escapeHtml(item.name)}" data-src="${escapeHtml(src)}" src="${escapeHtml(src)}">`;
+  if (!item.player || !isOfficialCamera(item.id)) {
+    return frame;
+  }
+  return `${frame}<button type="button" class="camera-play" data-camera-id="${escapeHtml(item.id)}" data-camera-name="${escapeHtml(item.name)}">Мини-плеер</button>`;
+}
+
+function isOfficialCamera(id) {
+  return String(id).startsWith("tfl-") || String(id).startsWith("ca-");
 }
 
 function popupTitle(item) {
@@ -1043,6 +1051,7 @@ function kindLabel(item) {
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
 }
@@ -1058,6 +1067,11 @@ function attachPicking(viewer, root) {
   tooltip.hidden = true;
   root.appendChild(tooltip);
   let frameTimer = 0;
+  const player = document.createElement("div");
+  player.className = "camera-player";
+  player.hidden = true;
+  root.appendChild(player);
+  let playerTimer = 0;
 
   const stopFrame = () => {
     if (frameTimer) {
@@ -1065,6 +1079,80 @@ function attachPicking(viewer, root) {
       frameTimer = 0;
     }
   };
+
+  const closePlayer = () => {
+    if (playerTimer) {
+      window.clearInterval(playerTimer);
+      playerTimer = 0;
+    }
+    player.hidden = true;
+    player.replaceChildren();
+  };
+
+  const openPlayer = (id, name) => {
+    if (!isOfficialCamera(id)) {
+      return;
+    }
+    closePlayer();
+    const src = api.geo.cameraFrame(id);
+    player.style.left = "";
+    player.style.top = "";
+    player.style.right = "";
+    player.style.bottom = "";
+    const bar = document.createElement("div");
+    bar.className = "camera-player-bar";
+    const title = document.createElement("strong");
+    title.textContent = name || "Камера";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "camera-player-close";
+    close.setAttribute("aria-label", "Закрыть");
+    close.textContent = "×";
+    close.onclick = closePlayer;
+    bar.append(title, close);
+    const img = document.createElement("img");
+    img.className = "camera-player-frame";
+    img.alt = name || "Камера";
+    img.src = src;
+    player.append(bar, img);
+    player.hidden = false;
+    playerTimer = window.setInterval(() => {
+      img.src = `${src}${src.includes("?") ? "&" : "?"}t=${Date.now()}`;
+    }, 8000);
+    bar.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button")) {
+        return;
+      }
+      const box = player.getBoundingClientRect();
+      const rootBox = root.getBoundingClientRect();
+      const offsetX = event.clientX - box.left;
+      const offsetY = event.clientY - box.top;
+      player.style.right = "auto";
+      player.style.bottom = "auto";
+      player.style.left = `${box.left - rootBox.left}px`;
+      player.style.top = `${box.top - rootBox.top}px`;
+      const move = (ev) => {
+        const x = ev.clientX - rootBox.left - offsetX;
+        const y = ev.clientY - rootBox.top - offsetY;
+        player.style.left = `${Math.max(8, Math.min(x, rootBox.width - player.offsetWidth - 8))}px`;
+        player.style.top = `${Math.max(8, Math.min(y, rootBox.height - player.offsetHeight - 8))}px`;
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+  };
+
+  popup.addEventListener("click", (event) => {
+    const button = event.target.closest(".camera-play");
+    if (!button || !popup.contains(button)) {
+      return;
+    }
+    openPlayer(button.dataset.cameraId || "", button.dataset.cameraName || "");
+  });
 
   const bindCameraFrame = () => {
     stopFrame();

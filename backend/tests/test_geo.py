@@ -335,6 +335,8 @@ def test_cameras_zoom_bbox_and_strip_url() -> None:
     data = cameras(50, -1, 52, 1, zoom=8)
     assert [item["id"] for item in data["items"]] == ["tfl-in"]
     assert "image_url" not in data["items"][0]
+    assert data["items"][0]["player"] is True
+    assert data["items"][0]["has_frame"] is True
 
 
 def test_cameras_world_view_spreads_regions() -> None:
@@ -477,6 +479,7 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
     data = cameras(42, -84, 43, -83, zoom=8)
     assert [item["id"] for item in data["items"]] == ["snap-252977", "snap-stream"]
     assert data["items"][0]["has_frame"] is True
+    assert data["items"][0]["player"] is False
     assert "image_url" not in data["items"][0]
     assert data["source"] == "Public snapshot"
     monkeypatch.setattr(
