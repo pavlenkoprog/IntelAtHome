@@ -1,12 +1,13 @@
 const API_BASE = "/api/v1";
 
 async function request(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (!(options.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
     ...options,
+    headers,
   });
 
   if (response.status === 204) {
@@ -45,5 +46,11 @@ export const api = {
     cameras: (bbox) => request(`/geo/cameras?${new URLSearchParams(bbox)}`),
     satellites: () => request("/geo/satellites"),
     cameraFrame: (id) => `${API_BASE}/geo/cameras/${encodeURIComponent(id)}/frame`,
+  },
+  media: {
+    list: () => request("/media"),
+    upload: (formData) => request("/media", { method: "POST", body: formData }),
+    remove: (id) => request(`/media/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    previewUrl: (id) => `${API_BASE}/media/${encodeURIComponent(id)}/preview`,
   },
 };

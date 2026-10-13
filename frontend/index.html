@@ -16,13 +16,15 @@
             <small>Investigation OS</small>
           </div>
         </div>
-        <nav class="nav">
-          <a href="#/globe" data-route="globe">Глобус</a>
-          <a href="#/dashboard" data-route="dashboard">Обзор</a>
-          <a href="#/investigations" data-route="investigations">Расследования</a>
-          <a href="#/entities" data-route="entities">Сущности</a>
-          <a href="#/datasets" data-route="datasets">Датасеты</a>
-        </nav>
+        <section class="media-panel" aria-label="Геоданные файла">
+          <label class="upload-drop" id="mediaDrop">
+            <input id="mediaFile" type="file" accept="image/*,video/*" multiple />
+            <strong>Загрузить фото или видео</strong>
+            <small>Координаты читаются из метаданных. Сам файл не сохраняется — остаётся превью.</small>
+          </label>
+          <p id="mediaStatus" class="media-status"></p>
+          <div id="mediaList" class="media-list"></div>
+        </section>
       </aside>
       <div class="workspace">
         <header class="topbar">

@@ -41,6 +41,10 @@ export async function showGlobe() {
 
   requestAnimationFrame(() => viewer.resize());
   window.setTimeout(() => viewer.resize(), 120);
+  renderMediaPins();
+  if (pendingFly) {
+    runFly(pendingFly.lat, pendingFly.lon);
+  }
 }
 
 export function hideGlobe() {
@@ -170,6 +174,63 @@ function loadCss(href) {
   link.rel = "stylesheet";
   link.href = href;
   document.head.appendChild(link);
+}
+
+let pinSource = null;
+let pendingPins = [];
+let pendingActiveId = "";
+let pendingFly = null;
+
+export function setMediaPins(items, activeId = "") {
+  pendingPins = items || [];
+  pendingActiveId = activeId || "";
+  renderMediaPins();
+}
+
+export function flyToLatLon(lat, lon) {
+  pendingFly = { lat, lon };
+  if (viewer) {
+    runFly(lat, lon);
+  }
+}
+
+function renderMediaPins() {
+  const Cesium = window.Cesium;
+  if (!viewer || !Cesium) {
+    return;
+  }
+  if (!pinSource) {
+    pinSource = new Cesium.CustomDataSource("media-pins");
+    viewer.dataSources.add(pinSource);
+  }
+  pinSource.entities.removeAll();
+  for (const item of pendingPins) {
+    if (item.latitude == null || item.longitude == null) {
+      continue;
+    }
+    const active = item.id === pendingActiveId;
+    pinSource.entities.add({
+      id: item.id,
+      position: Cesium.Cartesian3.fromDegrees(item.longitude, item.latitude),
+      point: {
+        pixelSize: active ? 16 : 11,
+        color: Cesium.Color.fromCssColorString("#f0a202"),
+        outlineColor: Cesium.Color.fromCssColorString("#1a1203"),
+        outlineWidth: active ? 3 : 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+      },
+    });
+  }
+}
+
+function runFly(lat, lon) {
+  const Cesium = window.Cesium;
+  const target = Cesium.Cartesian3.fromDegrees(lon, lat);
+  viewer.camera.flyToBoundingSphere(new Cesium.BoundingSphere(target, 400), {
+    duration: 1.3,
+    offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-45), 2800),
+  });
 }
 
 function loadScript(src) {

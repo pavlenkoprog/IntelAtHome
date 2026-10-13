@@ -31,22 +31,28 @@ a {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 300px 1fr;
   height: 100%;
   min-height: 100vh;
 }
 
 .sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--panel);
-  padding: 24px 16px;
+  padding: 20px 14px;
 }
 
 .brand {
   display: flex;
   gap: 12px;
   align-items: center;
-  margin-bottom: 32px;
+  margin-bottom: 18px;
+  flex: none;
 }
 
 .brand-mark {
@@ -62,21 +68,122 @@ a {
   color: var(--muted);
 }
 
-.nav {
+.media-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.upload-drop {
+  position: relative;
   display: grid;
-  gap: 6px;
-}
-
-.nav a {
-  padding: 10px 12px;
-  border-radius: 8px;
-  color: var(--muted);
-}
-
-.nav a.active,
-.nav a:hover {
+  gap: 4px;
+  padding: 14px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
   background: var(--panel-2);
-  color: var(--text);
+  cursor: pointer;
+}
+
+.upload-drop.is-drag {
+  border-color: var(--accent);
+}
+
+.upload-drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.upload-drop strong {
+  font-size: 14px;
+}
+
+.upload-drop small,
+.media-status,
+.media-empty,
+.media-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.media-status {
+  margin: 0;
+  min-height: 1.2em;
+}
+
+.media-status.is-err {
+  color: var(--danger);
+}
+
+.media-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.media-empty {
+  margin: 0;
+}
+
+.media-card {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.media-card.is-active {
+  border-color: var(--accent);
+}
+
+.media-card img {
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #0b0f14;
+}
+
+.media-card strong {
+  display: block;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-card span {
+  display: block;
+  margin-top: 2px;
+}
+
+.media-remove {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: 11px/1.2 "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.media-remove:hover {
+  color: var(--danger);
 }
 
 .workspace {
@@ -606,6 +713,8 @@ form {
   }
 
   .sidebar {
+    height: auto;
+    max-height: 52vh;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
