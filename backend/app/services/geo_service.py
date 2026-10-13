@@ -55,9 +55,16 @@ STORM_CODES = {95, 96, 99}
 TFL_JAMCAM = "https://api.tfl.gov.uk/Place/Type/JamCam"
 TFL_IMAGE_ORIGIN = "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/"
 CALTRANS_DISTRICTS = (4, 7, 11, 3)
+SNAPSHOT_THUMB_PREFIXES = (
+    "http://insecam.org/static/thumb/",
+    "https://insecam.org/static/thumb/",
+    "http://www.insecam.org/static/thumb/",
+    "https://www.insecam.org/static/thumb/",
+)
 CAMERA_IMAGE_PREFIXES = (
     TFL_IMAGE_ORIGIN,
     "https://cwwp2.dot.ca.gov/",
+    *SNAPSHOT_THUMB_PREFIXES,
 )
 CAMERA_BBOX_CAP = 150
 SATELLITES_URL = "https://dataengine.worldwideview.dev/data/surveillance_satellites"
@@ -602,28 +609,139 @@ def _refresh_cameras_snapshot() -> None:
                 log.info("caltrans cameras failed: %s", exc)
 
     items = list(by_id.values())
+    if not items:
+        previous = _get_store("cameras") or {}
+        items = [
+            item
+            for item in previous.get("items") or []
+            if not str(item.get("id") or "").startswith("snap-")
+        ]
+    items.extend(_snapshot_cameras())
     if items:
-        sources = sorted({item["source"] for item in items})
+        sources = sorted({str(item.get("source") or "") for item in items if item.get("source")})
         _put_store("cameras", {"items": items, "source": " / ".join(sources)})
         log.info("cameras snapshot %s", len(items))
 
 
+def _snapshot_thumb(url: str) -> str:
+    for prefix in SNAPSHOT_THUMB_PREFIXES:
+        if url.startswith(prefix):
+            name = url[len(prefix) :].split("?", 1)[0].split("/", 1)[0]
+            if name.endswith(".jpg"):
+                name = name[:-4]
+            if name and all(char.isalnum() or char in "-_" for char in name):
+                return name
+    return ""
+
+
+def _parse_snapshot_cameras(raw: Any) -> list[dict]:
+    features = raw.get("features") if isinstance(raw, dict) else None
+    if not isinstance(features, list):
+        return []
+    items: dict[str, dict] = {}
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}
+        coords = geometry.get("coordinates")
+        if not isinstance(coords, list) or len(coords) < 2:
+            continue
+        try:
+            lon = float(coords[0])
+            lat = float(coords[1])
+        except (TypeError, ValueError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        city = str(props.get("city") or "").strip()
+        region = str(props.get("region") or "").strip()
+        country = str(props.get("country") or "").strip()
+        categories = props.get("categories")
+        if isinstance(categories, list):
+            category = ", ".join(str(value).strip() for value in categories if str(value).strip())
+        else:
+            category = ""
+        preview = str(props.get("preview_url") or "").strip()
+        thumb = _snapshot_thumb(preview)
+        camera_id = f"snap-{thumb}" if thumb else f"snap-{lat:.5f}-{lon:.5f}"
+        name = ", ".join(part for part in (city, region) if part) or country or "Camera"
+        item = {
+            "id": camera_id,
+            "name": name,
+            "kind": "camera",
+            "lat": lat,
+            "lon": lon,
+            "source": "Public snapshot",
+            "city": city,
+            "country": country,
+            "category": category,
+        }
+        if thumb:
+            item["image_url"] = preview
+        items[camera_id] = item
+    return list(items.values())
+
+
+_SNAPSHOT_CAMERAS: tuple[float, list[dict]] | None = None
+
+
+def _snapshot_cameras() -> list[dict]:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return []
+    global _SNAPSHOT_CAMERAS
+    path = SNAPSHOT_DIR / "cameras_geojson.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return []
+    if _SNAPSHOT_CAMERAS and _SNAPSHOT_CAMERAS[0] == mtime:
+        return _SNAPSHOT_CAMERAS[1]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.info("snapshot cameras unreadable: %s", exc)
+        return []
+    items = _parse_snapshot_cameras(raw)
+    _SNAPSHOT_CAMERAS = (mtime, items)
+    log.info("snapshot cameras %s", len(items))
+    return items
+
+
+def _camera_catalog() -> tuple[list[dict], str]:
+    snap = _get_store("cameras") or {}
+    live = [
+        item
+        for item in snap.get("items") or []
+        if not str(item.get("id") or "").startswith("snap-")
+    ]
+    items = [*live, *_snapshot_cameras()]
+    sources: list[str] = []
+    for item in items:
+        source = str(item.get("source") or "")
+        if source and source not in sources:
+            sources.append(source)
+    return items, " / ".join(sources) or "TfL / Caltrans"
+
+
 def _public_camera(item: dict) -> dict:
-    return {key: value for key, value in item.items() if key != "image_url"}
+    public = {key: value for key, value in item.items() if key != "image_url"}
+    public["has_frame"] = bool(item.get("image_url"))
+    return public
 
 
 def cameras(south: float, west: float, north: float, east: float, zoom: int | None = None) -> dict:
     if north <= south:
         return {"items": [], "source": "TfL / Caltrans", "reason": "bad_bbox"}
-    snap = _get_store("cameras")
-    if not snap:
-        return {"items": [], "source": "TfL / Caltrans", "reason": "warming"}
+    catalog, source = _camera_catalog()
+    if not catalog:
+        return {"items": [], "source": source, "reason": "warming"}
     world = zoom is not None and zoom < 4
     if world:
-        items = list(snap["items"])
+        items = list(catalog)
         south, west, north, east = -85.0, -180.0, 85.0, 180.0
     else:
-        items = [item for item in snap["items"] if _in_bbox(item["lat"], item["lon"], south, west, north, east)]
+        items = [item for item in catalog if _in_bbox(item["lat"], item["lon"], south, west, north, east)]
     if len(items) > CAMERA_BBOX_CAP:
         if world or zoom is None or zoom < 8:
             items = _spread_flights(items, south, west, north, east, CAMERA_BBOX_CAP)
@@ -632,12 +750,12 @@ def cameras(south: float, west: float, north: float, east: float, zoom: int | No
             mid_lon = (west + east) / 2
             items.sort(key=lambda item: (item["lat"] - mid_lat) ** 2 + (item["lon"] - mid_lon) ** 2)
             items = items[:CAMERA_BBOX_CAP]
-    return {"items": [_public_camera(item) for item in items], "source": snap.get("source") or "TfL / Caltrans"}
+    return {"items": [_public_camera(item) for item in items], "source": source}
 
 
 def camera_record(camera_id: str) -> dict | None:
-    snap = _get_store("cameras") or {}
-    for item in snap.get("items") or []:
+    catalog, _source = _camera_catalog()
+    for item in catalog:
         if item.get("id") == camera_id:
             return item
     return None

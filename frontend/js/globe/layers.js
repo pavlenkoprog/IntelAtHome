@@ -1012,7 +1012,7 @@ function popupHtml(item) {
 }
 
 function cameraFrameHtml(item) {
-  if (item.kind !== "camera" || !item.id) {
+  if (item.kind !== "camera" || !item.id || item.has_frame === false) {
     return "";
   }
   const src = api.geo.cameraFrame(item.id);

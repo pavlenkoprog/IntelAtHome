@@ -8,6 +8,7 @@ from app.services.geo_service import (
     _format_src_date,
     _parse_adsb,
     _parse_caltrans_cameras,
+    _parse_snapshot_cameras,
     _parse_tfl_cameras,
     _parse_satellites,
     _put_store,
@@ -409,6 +410,81 @@ def test_camera_frame_unknown_and_allowlist(monkeypatch) -> None:
         lambda url, timeout=8.0: (b"jpeg-bytes", "image/jpeg"),
     )
     assert camera_frame("tfl-00001.00001") == (b"jpeg-bytes", "image/jpeg")
+
+
+def test_parse_snapshot_cameras_keeps_preview_not_stream() -> None:
+    items = _parse_snapshot_cameras(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-83.74, 42.27]},
+                    "properties": {
+                        "stream": "http://203.0.113.5/mjpg/video.mjpg",
+                        "preview_url": "http://insecam.org/static/thumb/252977.jpg",
+                        "country": "United States",
+                        "region": "Michigan",
+                        "city": "Ann Arbor",
+                        "categories": ["other"],
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [999, 999]},
+                    "properties": {"preview_url": "http://insecam.org/static/thumb/1.jpg"},
+                },
+            ],
+        }
+    )
+    assert len(items) == 1
+    assert items[0]["id"] == "snap-252977"
+    assert items[0]["kind"] == "camera"
+    assert items[0]["city"] == "Ann Arbor"
+    assert items[0]["country"] == "United States"
+    assert items[0]["image_url"] == "http://insecam.org/static/thumb/252977.jpg"
+    assert "203.0.113.5" not in json.dumps(items[0])
+
+
+def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
+    _STORE.clear()
+    monkeypatch.setattr(
+        "app.services.geo_service._snapshot_cameras",
+        lambda: [
+            {
+                "id": "snap-252977",
+                "name": "Ann Arbor, Michigan",
+                "kind": "camera",
+                "lat": 42.27,
+                "lon": -83.74,
+                "source": "Public snapshot",
+                "city": "Ann Arbor",
+                "country": "United States",
+                "category": "other",
+                "image_url": "http://insecam.org/static/thumb/252977.jpg",
+            },
+            {
+                "id": "snap-stream",
+                "name": "Bare stream",
+                "kind": "camera",
+                "lat": 42.28,
+                "lon": -83.75,
+                "source": "Public snapshot",
+                "image_url": "http://203.0.113.5/mjpg/video.mjpg",
+            },
+        ],
+    )
+    data = cameras(42, -84, 43, -83, zoom=8)
+    assert [item["id"] for item in data["items"]] == ["snap-252977", "snap-stream"]
+    assert data["items"][0]["has_frame"] is True
+    assert "image_url" not in data["items"][0]
+    assert data["source"] == "Public snapshot"
+    monkeypatch.setattr(
+        "app.services.geo_service._get_bytes",
+        lambda url, timeout=8.0: (b"jpeg-bytes", "image/jpeg"),
+    )
+    assert camera_frame("snap-252977") == (b"jpeg-bytes", "image/jpeg")
+    assert camera_frame("snap-stream") is None
 
 
 def test_weather_field_accepts_world_wrap(monkeypatch) -> None:
