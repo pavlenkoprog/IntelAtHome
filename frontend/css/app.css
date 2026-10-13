@@ -405,10 +405,15 @@ a {
   object-fit: cover;
 }
 
-.camera-play {
-  display: block;
-  width: 100%;
+.camera-actions {
+  display: flex;
+  gap: 6px;
   margin-top: 8px;
+}
+
+.camera-connect,
+.camera-popout {
+  flex: 1;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -418,59 +423,16 @@ a {
   cursor: pointer;
 }
 
-.camera-play:hover {
+.camera-connect:hover,
+.camera-popout:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.camera-player {
-  position: absolute;
-  right: 16px;
-  bottom: 28px;
-  z-index: 870;
-  width: min(360px, calc(100% - 32px));
-  padding: 8px;
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  pointer-events: auto;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-}
-
-.camera-player-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-  cursor: grab;
-}
-
-.camera-player-bar strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.camera-player-close {
-  border: 0;
-  background: transparent;
+.camera-connect:disabled {
+  cursor: default;
   color: var(--muted);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.camera-player-frame {
-  display: block;
-  width: 100%;
-  min-height: 180px;
-  background: #0b0f14;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  object-fit: contain;
+  border-color: var(--line);
 }
 
 .storm-marker {

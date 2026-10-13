@@ -1016,11 +1016,14 @@ function cameraFrameHtml(item) {
     return "";
   }
   const src = api.geo.cameraFrame(item.id);
-  const frame = `<img class="camera-frame" alt="${escapeHtml(item.name)}" data-src="${escapeHtml(src)}" src="${escapeHtml(src)}">`;
-  if (!item.player || !isOfficialCamera(item.id)) {
+  const live = item.player && isOfficialCamera(item.id);
+  const frame = `<img class="camera-frame" alt="${escapeHtml(item.name)}" data-src="${escapeHtml(src)}" src="${escapeHtml(src)}"${live ? ' data-player="1"' : ""}>`;
+  if (!live) {
     return frame;
   }
-  return `${frame}<button type="button" class="camera-play" data-camera-id="${escapeHtml(item.id)}" data-camera-name="${escapeHtml(item.name)}">Мини-плеер</button>`;
+  const id = escapeHtml(item.id);
+  const name = escapeHtml(item.name);
+  return `${frame}<div class="camera-actions"><button type="button" class="camera-connect">Подключить</button><button type="button" class="camera-popout" data-camera-id="${id}" data-camera-name="${name}">Открыть в окне</button></div>`;
 }
 
 function isOfficialCamera(id) {
@@ -1067,11 +1070,6 @@ function attachPicking(viewer, root) {
   tooltip.hidden = true;
   root.appendChild(tooltip);
   let frameTimer = 0;
-  const player = document.createElement("div");
-  player.className = "camera-player";
-  player.hidden = true;
-  root.appendChild(player);
-  let playerTimer = 0;
 
   const stopFrame = () => {
     if (frameTimer) {
@@ -1080,96 +1078,69 @@ function attachPicking(viewer, root) {
     }
   };
 
-  const closePlayer = () => {
-    if (playerTimer) {
-      window.clearInterval(playerTimer);
-      playerTimer = 0;
+  const startFrame = (img) => {
+    if (!img) {
+      return;
     }
-    player.hidden = true;
-    player.replaceChildren();
+    const src = img.dataset.src || img.getAttribute("src");
+    if (!src || img.dataset.live === "1") {
+      return;
+    }
+    img.dataset.live = "1";
+    stopFrame();
+    const bump = () => {
+      img.src = `${src}${src.includes("?") ? "&" : "?"}t=${Date.now()}`;
+    };
+    bump();
+    frameTimer = window.setInterval(bump, 8000);
   };
 
-  const openPlayer = (id, name) => {
+  const openCameraWindow = (id, name) => {
     if (!isOfficialCamera(id)) {
       return;
     }
-    closePlayer();
-    const src = api.geo.cameraFrame(id);
-    player.style.left = "";
-    player.style.top = "";
-    player.style.right = "";
-    player.style.bottom = "";
-    const bar = document.createElement("div");
-    bar.className = "camera-player-bar";
-    const title = document.createElement("strong");
-    title.textContent = name || "Камера";
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "camera-player-close";
-    close.setAttribute("aria-label", "Закрыть");
-    close.textContent = "×";
-    close.onclick = closePlayer;
-    bar.append(title, close);
-    const img = document.createElement("img");
-    img.className = "camera-player-frame";
+    const src = new URL(api.geo.cameraFrame(id), window.location.href).href;
+    const win = window.open("", `camera-${id}`, "popup,width=720,height=480");
+    if (!win) {
+      return;
+    }
+    win.document.title = name || "Камера";
+    win.document.body.style.margin = "0";
+    win.document.body.style.background = "#0b0f14";
+    const img = win.document.createElement("img");
     img.alt = name || "Камера";
-    img.src = src;
-    player.append(bar, img);
-    player.hidden = false;
-    playerTimer = window.setInterval(() => {
+    img.style.cssText = "display:block;width:100vw;height:100vh;object-fit:contain;background:#0b0f14;";
+    win.document.body.replaceChildren(img);
+    const bump = () => {
       img.src = `${src}${src.includes("?") ? "&" : "?"}t=${Date.now()}`;
-    }, 8000);
-    bar.addEventListener("pointerdown", (event) => {
-      if (event.target.closest("button")) {
-        return;
-      }
-      const box = player.getBoundingClientRect();
-      const rootBox = root.getBoundingClientRect();
-      const offsetX = event.clientX - box.left;
-      const offsetY = event.clientY - box.top;
-      player.style.right = "auto";
-      player.style.bottom = "auto";
-      player.style.left = `${box.left - rootBox.left}px`;
-      player.style.top = `${box.top - rootBox.top}px`;
-      const move = (ev) => {
-        const x = ev.clientX - rootBox.left - offsetX;
-        const y = ev.clientY - rootBox.top - offsetY;
-        player.style.left = `${Math.max(8, Math.min(x, rootBox.width - player.offsetWidth - 8))}px`;
-        player.style.top = `${Math.max(8, Math.min(y, rootBox.height - player.offsetHeight - 8))}px`;
-      };
-      const up = () => {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
-    });
+    };
+    bump();
+    const timer = win.setInterval(bump, 8000);
+    win.addEventListener("pagehide", () => win.clearInterval(timer));
+    win.focus();
   };
 
   popup.addEventListener("click", (event) => {
-    const button = event.target.closest(".camera-play");
-    if (!button || !popup.contains(button)) {
+    const connect = event.target.closest(".camera-connect");
+    if (connect && popup.contains(connect)) {
+      startFrame(popup.querySelector(".camera-frame"));
+      connect.disabled = true;
+      connect.textContent = "Подключено";
       return;
     }
-    openPlayer(button.dataset.cameraId || "", button.dataset.cameraName || "");
+    const popout = event.target.closest(".camera-popout");
+    if (popout && popup.contains(popout)) {
+      openCameraWindow(popout.dataset.cameraId || "", popout.dataset.cameraName || "");
+    }
   });
 
   const bindCameraFrame = () => {
     stopFrame();
     const img = popup.querySelector(".camera-frame");
-    if (!img) {
+    if (!img || img.dataset.player === "1") {
       return;
     }
-    const src = img.dataset.src || img.getAttribute("src");
-    if (!src) {
-      return;
-    }
-    const bump = () => {
-      const next = `${src}${src.includes("?") ? "&" : "?"}t=${Date.now()}`;
-      img.src = next;
-    };
-    bump();
-    frameTimer = window.setInterval(bump, 8000);
+    startFrame(img);
   };
 
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
