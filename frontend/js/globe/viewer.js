@@ -2,6 +2,7 @@ import { globeHomeView } from "./camera.js";
 import { attachCursorMeta } from "./cursor-meta.js";
 import { attachLooks } from "./filters.js";
 import { attachLayers } from "./layers.js";
+import { attachRecentImagery } from "./recent-imagery.js";
 
 const CESIUM_VERSION = "1.124.0";
 const CESIUM_CDNS = [
@@ -33,6 +34,7 @@ export async function showGlobe() {
     await attachLayers(viewer, root);
     attachLooks(root, hud, viewer);
     attachCursorMeta(viewer, root);
+    attachRecentImagery(viewer, root);
   } else {
     viewer.useDefaultRenderLoop = true;
   }
