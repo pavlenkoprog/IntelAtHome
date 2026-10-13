@@ -208,6 +208,14 @@ a {
   min-height: 0;
 }
 
+.shot-panel-sep {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .shot-row {
   display: flex;
   justify-content: space-between;

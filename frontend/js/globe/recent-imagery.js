@@ -2,6 +2,9 @@ import { pickLatLng } from "./camera.js";
 
 const CMR_ENDPOINT = "https://cmr.earthdata.nasa.gov/search/granules.umm_json";
 const WVS_ENDPOINT = "https://wvs.earthdata.nasa.gov/api/v1/snapshot";
+const WAYBACK_CONFIG = "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json";
+const WAYBACK_ZOOM = 15;
+const WAYBACK_LEVEL = 19;
 const CATALOG_DAYS = 30;
 const SIDE_KM = 10;
 const HALF_KM = SIDE_KM / 2;
@@ -92,23 +95,42 @@ export function attachRecentImagery(viewer, root) {
     panel.status.textContent = "Ищем снимки за 30 суток…";
     const controller = new AbortController();
     searchAbort = controller;
+    const waybackPromise = searchWayback(lat, lon, controller.signal);
+    let shots = [];
+    let shotsFailed = false;
     try {
-      const shots = await searchShots(lat, lon, controller.signal);
-      if (id !== requestId) {
+      shots = await searchShots(lat, lon, controller.signal);
+    } catch (error) {
+      if (id !== requestId || error?.name === "AbortError") {
+        waybackPromise.catch(() => {});
         return;
       }
-      if (!shots.length) {
-        panel.status.textContent = "За 30 суток снимка на эту точку нет";
-        return;
-      }
-      panel.status.textContent = `${shots.length} за 30 суток · квадрат ${SIDE_KM}×${SIDE_KM} км`;
-      renderShots(shots, box, id);
+      shotsFailed = true;
+    }
+    if (id !== requestId) {
+      return;
+    }
+    renderShots(shots, box, id);
+    panel.status.textContent = listingStatus(shots.length, null);
+    let versions = [];
+    let waybackFailed = false;
+    try {
+      versions = await waybackPromise;
     } catch (error) {
       if (id !== requestId || error?.name === "AbortError") {
         return;
       }
-      panel.status.textContent = "Каталог NASA недоступен";
+      waybackFailed = true;
     }
+    if (id !== requestId) {
+      return;
+    }
+    appendWayback(versions, box, id);
+    if (shotsFailed && waybackFailed) {
+      panel.status.textContent = "Каталоги недоступны";
+      return;
+    }
+    panel.status.textContent = listingStatus(shots.length, waybackFailed ? 0 : versions.length);
   }
 
   function renderShots(shots, box, id) {
@@ -124,7 +146,35 @@ export function attachRecentImagery(viewer, root) {
       const date = document.createElement("span");
       date.textContent = formatDay(shot.day);
       const meta = document.createElement("small");
-      meta.textContent = `${PRODUCTS[shot.product].label} · ${cloudLabel(shot.cloud)}`;
+      meta.textContent = shotLabel(shot);
+      button.append(date, meta);
+      button.addEventListener("click", () => {
+        if (id !== requestId) {
+          return;
+        }
+        void choose(shot, box, id);
+      });
+      panel.list.append(button);
+    }
+  }
+
+  function appendWayback(versions, box, id) {
+    if (!versions.length) {
+      return;
+    }
+    const label = document.createElement("div");
+    label.className = "shot-panel-sep";
+    label.textContent = "Wayback";
+    panel.list.append(label);
+    for (const shot of versions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "shot-row";
+      button.dataset.key = shot.key;
+      const date = document.createElement("span");
+      date.textContent = formatDay(shot.day);
+      const meta = document.createElement("small");
+      meta.textContent = "Wayback";
       button.append(date, meta);
       button.addEventListener("click", () => {
         if (id !== requestId) {
@@ -153,7 +203,7 @@ export function attachRecentImagery(viewer, root) {
         return;
       }
       patch = next;
-      panel.status.textContent = `${formatDay(shot.day)} · ${PRODUCTS[shot.product].label} · ${SIDE_KM}×${SIDE_KM} км`;
+      panel.status.textContent = `${formatDay(shot.day)} · ${shot.product === "wayback" ? "Wayback" : PRODUCTS[shot.product].label} · ${SIDE_KM}×${SIDE_KM} км`;
       const height = viewer.camera.positionCartographic?.height;
       if (height > FLY_ABOVE_M) {
         viewer.camera.flyTo({
@@ -188,7 +238,7 @@ function buildPanel(root) {
     </div>
     <div class="shot-panel-status"></div>
     <div class="shot-panel-list"></div>
-    <div class="shot-panel-credit">NASA GIBS · HLS</div>
+    <div class="shot-panel-credit">NASA GIBS · HLS · Esri Wayback</div>
   `;
   root.appendChild(panel);
   return {
@@ -312,6 +362,9 @@ function snapshotUrl(shot, box) {
 }
 
 async function loadPatch(viewer, shot, box, signal) {
+  if (shot.product === "wayback") {
+    return loadWaybackPatch(viewer, shot, box, signal);
+  }
   const Cesium = window.Cesium;
   const url = snapshotUrl(shot, box);
   const response = await fetch(url, { signal });
@@ -335,25 +388,7 @@ async function loadPatch(viewer, shot, box, signal) {
     signal.throwIfAborted();
     layer = new Cesium.ImageryLayer(provider);
     viewer.imageryLayers.add(layer, Math.min(1, viewer.imageryLayers.length));
-    const existing = viewer.entities.getById(FRAME_ID);
-    if (existing) {
-      viewer.entities.remove(existing);
-    }
-    const frame = viewer.entities.add({
-      id: FRAME_ID,
-      polyline: {
-        positions: Cesium.Cartesian3.fromDegreesArray([
-          box.west, box.south,
-          box.east, box.south,
-          box.east, box.north,
-          box.west, box.north,
-          box.west, box.south,
-        ]),
-        width: 2,
-        material: Cesium.Color.fromCssColorString("#f0a202"),
-        clampToGround: true,
-      },
-    });
+    const frame = addFrame(viewer, box);
     const created = { layer, frame, objectUrl };
     created.release = () => {
       viewer.imageryLayers.remove(layer, true);
@@ -368,6 +403,198 @@ async function loadPatch(viewer, shot, box, signal) {
     URL.revokeObjectURL(objectUrl);
     throw error;
   }
+}
+
+let waybackCatalog = null;
+const waybackVersions = new Map();
+
+async function searchWayback(lat, lon, signal) {
+  const tile = tileXY(lat, lon, WAYBACK_ZOOM);
+  const cacheKey = `${tile.z}/${tile.x}/${tile.y}`;
+  const cached = waybackVersions.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const catalog = await loadWaybackCatalog();
+  signal.throwIfAborted();
+  const sizes = await mapPool(catalog, 8, (item) => tileBytes(waybackTileUrl(item.url, tile), signal), signal);
+  signal.throwIfAborted();
+  const versions = [];
+  let previous = null;
+  catalog.forEach((item, index) => {
+    const bytes = sizes[index];
+    if (bytes == null || bytes === previous) {
+      return;
+    }
+    previous = bytes;
+    versions.push({
+      key: `WB:${item.releaseNum}`,
+      product: "wayback",
+      day: item.day,
+      tileUrl: item.url,
+    });
+  });
+  if (!versions.length && catalog.length) {
+    throw new Error("wayback tiles");
+  }
+  waybackVersions.set(cacheKey, versions);
+  return versions;
+}
+
+async function loadWaybackCatalog() {
+  if (waybackCatalog) {
+    return waybackCatalog;
+  }
+  const response = await fetch(WAYBACK_CONFIG);
+  if (!response.ok) {
+    throw new Error(`wayback ${response.status}`);
+  }
+  const json = await response.json();
+  const items = [];
+  for (const [key, value] of Object.entries(json)) {
+    if (!/^\d+$/.test(key) || typeof value?.itemURL !== "string") {
+      continue;
+    }
+    const day = String(value.itemTitle || "").match(/\d{4}-\d{2}-\d{2}/)?.[0];
+    if (!day) {
+      continue;
+    }
+    items.push({ releaseNum: Number(key), day, url: value.itemURL });
+  }
+  items.sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : b.releaseNum - a.releaseNum));
+  waybackCatalog = items;
+  return waybackCatalog;
+}
+
+function waybackTileUrl(template, tile) {
+  return template
+    .replaceAll("{level}", String(tile.z))
+    .replaceAll("{row}", String(tile.y))
+    .replaceAll("{col}", String(tile.x));
+}
+
+function tileXY(lat, lon, zoom) {
+  const scale = 2 ** zoom;
+  const latitude = (lat * Math.PI) / 180;
+  return {
+    z: zoom,
+    x: Math.floor(((lon + 180) / 360) * scale),
+    y: Math.floor(((1 - Math.log(Math.tan(latitude) + 1 / Math.cos(latitude)) / Math.PI) / 2) * scale),
+  };
+}
+
+async function tileBytes(url, signal) {
+  try {
+    const response = await fetch(url, { signal });
+    if (!response.ok) {
+      return null;
+    }
+    const blob = await response.blob();
+    return blob.size > 0 ? blob.size : null;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw error;
+    }
+    return null;
+  }
+}
+
+async function mapPool(items, limit, worker, signal) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      signal.throwIfAborted();
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+async function loadWaybackPatch(viewer, shot, box, signal) {
+  signal.throwIfAborted();
+  const Cesium = window.Cesium;
+  const rectangle = Cesium.Rectangle.fromDegrees(box.west, box.south, box.east, box.north);
+  const provider = new Cesium.UrlTemplateImageryProvider({
+    url: shot.tileUrl.replaceAll("{level}", "{z}").replaceAll("{row}", "{y}").replaceAll("{col}", "{x}"),
+    rectangle,
+    maximumLevel: WAYBACK_LEVEL,
+    credit: "Esri Wayback",
+    enablePickFeatures: false,
+  });
+  const layer = new Cesium.ImageryLayer(provider);
+  viewer.imageryLayers.add(layer, Math.min(1, viewer.imageryLayers.length));
+  const frame = addFrame(viewer, box);
+  return {
+    layer,
+    frame,
+    objectUrl: null,
+    release() {
+      viewer.imageryLayers.remove(layer, true);
+      viewer.entities.remove(frame);
+    },
+  };
+}
+
+function addFrame(viewer, box) {
+  const Cesium = window.Cesium;
+  const existing = viewer.entities.getById(FRAME_ID);
+  if (existing) {
+    viewer.entities.remove(existing);
+  }
+  return viewer.entities.add({
+    id: FRAME_ID,
+    polyline: {
+      positions: Cesium.Cartesian3.fromDegreesArray([
+        box.west, box.south,
+        box.east, box.south,
+        box.east, box.north,
+        box.west, box.north,
+        box.west, box.south,
+      ]),
+      width: 2,
+      material: Cesium.Color.fromCssColorString("#f0a202"),
+      clampToGround: true,
+    },
+  });
+}
+
+function shotLabel(shot) {
+  if (shot.product === "wayback") {
+    return "Wayback";
+  }
+  return `${PRODUCTS[shot.product].label} · ${cloudLabel(shot.cloud)}`;
+}
+
+function listingStatus(hlsCount, waybackCount) {
+  const parts = [];
+  if (hlsCount > 0) {
+    parts.push(`${hlsCount} за 30 суток`);
+  }
+  if (waybackCount == null) {
+    parts.push("версии Wayback…");
+  } else if (waybackCount > 0) {
+    parts.push(versionsLabel(waybackCount));
+  }
+  if (!parts.length) {
+    return "Снимков на эту точку нет";
+  }
+  return `${parts.join(" · ")} · квадрат ${SIDE_KM}×${SIDE_KM} км`;
+}
+
+function versionsLabel(count) {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) {
+    return `${count} версия Wayback`;
+  }
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `${count} версии Wayback`;
+  }
+  return `${count} версий Wayback`;
 }
 
 function formatCoord(lat, lon) {
