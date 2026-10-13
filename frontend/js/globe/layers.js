@@ -10,6 +10,7 @@ const ESRI_ROADS =
   "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer";
 const OSM_TILES = "https://tile.openstreetmap.org/";
 const PLANE_ICON = "/vendor/leaflet/images/plane_w.png";
+const CAMERA_ICON = "/vendor/leaflet/images/security_camera_negate.png";
 const SATELLITE_ICON = "/vendor/leaflet/images/satellite_negate.png";
 const SATELLITE_SIZE = 20;
 const PLANE_SIZE_BASE = 20;
@@ -25,7 +26,8 @@ const COLORS = {
   earthquake: "#ff8a3d",
   event: "#fb7185",
   flight: "#3dd68c",
-  camera: "#6be8ff",
+  cameraPublic: "#3dd68c",
+  cameraDump: "#f97316",
   satelliteMilitary: "#f97316",
   satelliteRecon: "#38bdf8",
 };
@@ -710,62 +712,22 @@ function renderItems(viewer, source, items, zoom) {
   }
 }
 
-let CAMERA_ICON = null;
-
-function cameraIcon() {
-  if (CAMERA_ICON) {
-    return CAMERA_ICON;
-  }
-  const canvas = document.createElement("canvas");
-  canvas.width = 44;
-  canvas.height = 36;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "rgba(6, 18, 24, 0.82)";
-  ctx.strokeStyle = COLORS.camera;
-  ctx.lineWidth = 2.2;
-  ctx.beginPath();
-  if (typeof ctx.roundRect === "function") {
-    ctx.roundRect(4, 8, 26, 20, 4);
-  } else {
-    ctx.rect(4, 8, 26, 20);
-  }
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(30, 14);
-  ctx.lineTo(40, 10);
-  ctx.lineTo(40, 26);
-  ctx.lineTo(30, 22);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = COLORS.camera;
-  ctx.beginPath();
-  ctx.arc(17, 18, 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(107, 232, 255, 0.35)";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(17, 18, 7, 0, Math.PI * 2);
-  ctx.stroke();
-  CAMERA_ICON = canvas;
-  return canvas;
-}
-
 function cameraEntity(item, zoom) {
   const Cesium = window.Cesium;
-  const size = Math.max(16, Math.min(32, Math.round(30 - Number(zoom || 0) * 1.1)));
+  const size = planeSize(zoom);
+  const dump = String(item.id || "").startsWith("snap-") || item.source === "Public snapshot";
+  const css = dump ? COLORS.cameraDump : COLORS.cameraPublic;
   return {
     name: item.name,
     description: popupHtml(item),
     position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 40),
     billboard: {
-      image: cameraIcon(),
+      image: CAMERA_ICON,
+      color: Cesium.Color.fromCssColorString(css),
       width: size,
-      height: Math.round(size * 0.82),
+      height: size,
       heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-      scaleByDistance: new Cesium.NearFarScalar(4.0e5, 1.0, 1.8e7, 2.4),
+      verticalOrigin: Cesium.VerticalOrigin.CENTER,
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
   };
