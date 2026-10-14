@@ -2,7 +2,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from app.services import geo_service
 
@@ -92,6 +92,19 @@ def get_camera_frame(camera_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Camera frame unavailable")
     body, content_type = frame
     return Response(content=body, media_type=content_type, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/cameras/{camera_id}/stream")
+def get_camera_stream(camera_id: str) -> StreamingResponse:
+    opened = geo_service.open_camera_stream(camera_id)
+    if not opened:
+        raise HTTPException(status_code=404, detail="Camera stream unavailable")
+    chunks, media_type = opened
+    return StreamingResponse(
+        chunks,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.get("/satellites")

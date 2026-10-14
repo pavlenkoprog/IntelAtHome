@@ -979,18 +979,32 @@ function popupHtml(item) {
 }
 
 function cameraFrameHtml(item) {
-  if (item.kind !== "camera" || !item.id || item.has_frame === false) {
+  if (item.kind !== "camera" || !item.id) {
     return "";
   }
-  const src = api.geo.cameraFrame(item.id);
-  const live = item.player && isOfficialCamera(item.id);
-  const frame = `<img class="camera-frame" alt="${escapeHtml(item.name)}" data-src="${escapeHtml(src)}" src="${escapeHtml(src)}"${live ? ' data-player="1"' : ""}>`;
-  if (!live) {
+  const streamed = item.has_stream === true;
+  const official = Boolean(item.player) && isOfficialCamera(item.id);
+  const preview = item.has_frame === true;
+  if (!preview && !streamed) {
+    return "";
+  }
+  const name = escapeHtml(item.name);
+  const previewSrc = preview ? escapeHtml(api.geo.cameraFrame(item.id)) : "";
+  const streamSrc = streamed ? escapeHtml(api.geo.cameraStream(item.id)) : "";
+  let frame = "";
+  if (official) {
+    frame = `<img class="camera-frame" alt="${name}" data-src="${previewSrc}" data-player="1">`;
+  } else if (previewSrc) {
+    frame = `<img class="camera-frame" alt="${name}" src="${previewSrc}" data-src="${previewSrc}"${streamSrc ? ` data-stream-src="${streamSrc}" data-player="1"` : ""}>`;
+  } else {
+    frame = `<div class="camera-frame camera-frame-pending" data-stream-src="${streamSrc}" data-player="1"></div>`;
+  }
+  if (!official && !streamed) {
     return frame;
   }
   const id = escapeHtml(item.id);
-  const name = escapeHtml(item.name);
-  return `${frame}<div class="camera-actions"><button type="button" class="camera-connect">Подключить</button><button type="button" class="camera-popout" data-camera-id="${id}" data-camera-name="${name}">Открыть в окне</button></div>`;
+  const mode = streamed ? "stream" : "frame";
+  return `${frame}<div class="camera-actions"><button type="button" class="camera-connect">Подключить</button><button type="button" class="camera-popout" data-camera-id="${id}" data-camera-name="${name}" data-camera-mode="${mode}">Открыть в окне</button></div>`;
 }
 
 function isOfficialCamera(id) {
@@ -1062,11 +1076,31 @@ function attachPicking(viewer, root) {
     frameTimer = window.setInterval(bump, 8000);
   };
 
-  const openCameraWindow = (id, name) => {
-    if (!isOfficialCamera(id)) {
+  const playStream = (node) => {
+    const src = node && node.dataset.streamSrc;
+    if (!src || node.dataset.live === "1") {
       return;
     }
-    const src = new URL(api.geo.cameraFrame(id), window.location.href).href;
+    stopFrame();
+    let img = node;
+    if (node.tagName !== "IMG") {
+      img = document.createElement("img");
+      img.className = "camera-frame";
+      img.alt = "Камера";
+      img.dataset.streamSrc = src;
+      node.replaceWith(img);
+    }
+    img.dataset.live = "1";
+    img.src = src;
+  };
+
+  const openCameraWindow = (id, name, mode) => {
+    const stream = mode === "stream";
+    if (!stream && !isOfficialCamera(id)) {
+      return;
+    }
+    const path = stream ? api.geo.cameraStream(id) : api.geo.cameraFrame(id);
+    const src = new URL(path, window.location.href).href;
     const win = window.open("", `camera-${id}`, "popup,width=720,height=480");
     if (!win) {
       return;
@@ -1078,6 +1112,11 @@ function attachPicking(viewer, root) {
     img.alt = name || "Камера";
     img.style.cssText = "display:block;width:100vw;height:100vh;object-fit:contain;background:#0b0f14;";
     win.document.body.replaceChildren(img);
+    if (stream) {
+      img.src = src;
+      win.focus();
+      return;
+    }
     const bump = () => {
       img.src = `${src}${src.includes("?") ? "&" : "?"}t=${Date.now()}`;
     };
@@ -1090,14 +1129,23 @@ function attachPicking(viewer, root) {
   popup.addEventListener("click", (event) => {
     const connect = event.target.closest(".camera-connect");
     if (connect && popup.contains(connect)) {
-      startFrame(popup.querySelector(".camera-frame"));
+      const frame = popup.querySelector(".camera-frame");
+      if (frame && frame.dataset.streamSrc) {
+        playStream(frame);
+      } else {
+        startFrame(frame);
+      }
       connect.disabled = true;
       connect.textContent = "Подключено";
       return;
     }
     const popout = event.target.closest(".camera-popout");
     if (popout && popup.contains(popout)) {
-      openCameraWindow(popout.dataset.cameraId || "", popout.dataset.cameraName || "");
+      openCameraWindow(
+        popout.dataset.cameraId || "",
+        popout.dataset.cameraName || "",
+        popout.dataset.cameraMode || "",
+      );
     }
   });
 

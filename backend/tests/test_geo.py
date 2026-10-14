@@ -14,7 +14,9 @@ from app.services.geo_service import (
     _put_store,
     _spread_flights,
     camera_frame,
+    camera_stream_url,
     cameras,
+    open_camera_stream,
     flights,
     places,
     radar_tile_url,
@@ -414,7 +416,7 @@ def test_camera_frame_unknown_and_allowlist(monkeypatch) -> None:
     assert camera_frame("tfl-00001.00001") == (b"jpeg-bytes", "image/jpeg")
 
 
-def test_parse_snapshot_cameras_keeps_preview_not_stream() -> None:
+def test_parse_snapshot_cameras_keeps_stream_without_preview() -> None:
     items = _parse_snapshot_cameras(
         {
             "type": "FeatureCollection",
@@ -423,8 +425,7 @@ def test_parse_snapshot_cameras_keeps_preview_not_stream() -> None:
                     "type": "Feature",
                     "geometry": {"type": "Point", "coordinates": [-83.74, 42.27]},
                     "properties": {
-                        "stream": "http://203.0.113.5/mjpg/video.mjpg",
-                        "preview_url": "http://insecam.org/static/thumb/252977.jpg",
+                        "stream": "http://173.167.10.225/mjpg/video.mjpg",
                         "country": "United States",
                         "region": "Michigan",
                         "city": "Ann Arbor",
@@ -433,19 +434,43 @@ def test_parse_snapshot_cameras_keeps_preview_not_stream() -> None:
                 },
                 {
                     "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-83.70, 42.20]},
+                    "properties": {
+                        "stream": "http://203.0.113.5/mjpg/video.mjpg",
+                        "preview_url": "http://insecam.org/static/thumb/252977.jpg",
+                        "city": "Ann Arbor",
+                    },
+                },
+                {
+                    "type": "Feature",
                     "geometry": {"type": "Point", "coordinates": [999, 999]},
-                    "properties": {"preview_url": "http://insecam.org/static/thumb/1.jpg"},
+                    "properties": {"stream": "http://173.167.10.225/mjpg/video.mjpg"},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-83.1, 42.1]},
+                    "properties": {
+                        "stream": "http://127.0.0.1/secret",
+                        "preview_url": "http://insecam.org/static/thumb/1.jpg",
+                        "city": "Local",
+                    },
                 },
             ],
         }
     )
-    assert len(items) == 1
-    assert items[0]["id"] == "snap-252977"
-    assert items[0]["kind"] == "camera"
-    assert items[0]["city"] == "Ann Arbor"
-    assert items[0]["country"] == "United States"
-    assert items[0]["image_url"] == "http://insecam.org/static/thumb/252977.jpg"
-    assert "203.0.113.5" not in json.dumps(items[0])
+    by_id = {item["id"]: item for item in items}
+    live = by_id["snap-42.27000--83.74000"]
+    assert live["city"] == "Ann Arbor"
+    assert live["country"] == "United States"
+    assert "image_url" not in live
+    assert live["stream_url"] == "http://173.167.10.225/mjpg/video.mjpg"
+    preview = by_id["snap-252977"]
+    assert preview["image_url"] == "http://insecam.org/static/thumb/252977.jpg"
+    assert "stream_url" not in preview
+    assert "203.0.113.5" not in json.dumps(preview)
+    local = by_id["snap-1"]
+    assert "stream_url" not in local
+    assert "127.0.0.1" not in json.dumps(local)
 
 
 def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
@@ -474,13 +499,28 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
                 "source": "Дамп публичных камер",
                 "image_url": "http://203.0.113.5/mjpg/video.mjpg",
             },
+            {
+                "id": "snap-live",
+                "name": "No preview",
+                "kind": "camera",
+                "lat": 42.29,
+                "lon": -83.76,
+                "source": "Дамп публичных камер",
+                "stream_url": "http://173.167.10.225/mjpg/video.mjpg",
+            },
         ],
     )
     data = cameras(42, -84, 43, -83, zoom=8)
-    assert [item["id"] for item in data["items"]] == ["snap-252977", "snap-stream"]
+    assert [item["id"] for item in data["items"]] == ["snap-252977", "snap-stream", "snap-live"]
     assert data["items"][0]["has_frame"] is True
+    assert data["items"][0]["has_stream"] is False
     assert data["items"][0]["player"] is False
     assert "image_url" not in data["items"][0]
+    live = data["items"][2]
+    assert live["has_frame"] is False
+    assert live["has_stream"] is True
+    assert live["player"] is True
+    assert "stream_url" not in live
     assert data["source"] == "Дамп публичных камер"
     monkeypatch.setattr(
         "app.services.geo_service._get_bytes",
@@ -488,6 +528,9 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
     )
     assert camera_frame("snap-252977") == (b"jpeg-bytes", "image/jpeg")
     assert camera_frame("snap-stream") is None
+    assert camera_frame("snap-live") is None
+    assert camera_stream_url("snap-live") == "http://173.167.10.225/mjpg/video.mjpg"
+    assert camera_stream_url("snap-stream") == ""
 
 
 def test_weather_field_accepts_world_wrap(monkeypatch) -> None:
@@ -545,6 +588,80 @@ def test_camera_http_routes(client, monkeypatch) -> None:
     assert frame.headers["content-type"].startswith("image/jpeg")
     assert frame.headers.get("cache-control") == "no-store"
     assert client.get("/api/v1/geo/cameras/missing/frame").status_code == 404
+    assert body["items"][0]["has_stream"] is False
+    assert body["items"][0]["player"] is True
+
+
+def test_camera_stream_route(client, monkeypatch) -> None:
+    def fake(camera_id: str):
+        if camera_id != "snap-live":
+            return None
+        return iter([b"--frame\r\n", b"jpeg"]), "multipart/x-mixed-replace; boundary=frame"
+
+    monkeypatch.setattr("app.services.geo_service.open_camera_stream", fake)
+    ok = client.get("/api/v1/geo/cameras/snap-live/stream")
+    assert ok.status_code == 200
+    assert ok.content == b"--frame\r\njpeg"
+    assert ok.headers["content-type"].startswith("multipart/x-mixed-replace")
+    assert ok.headers.get("cache-control") == "no-store"
+    assert client.get("/api/v1/geo/cameras/missing/stream").status_code == 404
+
+
+def test_open_camera_stream_rejects_private_redirect(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.geo_service.camera_stream_url",
+        lambda camera_id: "http://173.167.10.225/mjpg/video.mjpg" if camera_id == "snap-live" else "",
+    )
+
+    class FakeResponse:
+        def __init__(self, status: int, headers: dict, body: bytes = b"") -> None:
+            self.status_code = status
+            self.headers = headers
+            self._body = body
+            self.closed = False
+
+        def iter_bytes(self):
+            yield self._body
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.closed = False
+
+        def build_request(self, method: str, url: str):
+            return url
+
+        def send(self, url, stream: bool = True):
+            if url.endswith("/secret"):
+                return FakeResponse(200, {"content-type": "text/html"}, b"<html></html>")
+            return FakeResponse(302, {"location": "http://127.0.0.1/secret"})
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("app.services.geo_service.httpx.Client", FakeClient)
+    assert open_camera_stream("snap-live") is None
+
+    class HtmlClient(FakeClient):
+        def send(self, url, stream: bool = True):
+            return FakeResponse(200, {"content-type": "text/html"}, b"<html></html>")
+
+    monkeypatch.setattr("app.services.geo_service.httpx.Client", HtmlClient)
+    assert open_camera_stream("snap-live") is None
+
+    class LiveClient(FakeClient):
+        def send(self, url, stream: bool = True):
+            return FakeResponse(200, {"content-type": "image/jpeg"}, b"jpeg-bytes")
+
+    monkeypatch.setattr("app.services.geo_service.httpx.Client", LiveClient)
+    opened = open_camera_stream("snap-live")
+    assert opened is not None
+    chunks, media_type = opened
+    assert media_type == "image/jpeg"
+    assert b"".join(chunks) == b"jpeg-bytes"
+    assert open_camera_stream("missing") is None
 
 
 def test_parse_satellites_keeps_known_groups() -> None:

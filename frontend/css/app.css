@@ -405,6 +405,10 @@ a {
   object-fit: cover;
 }
 
+.camera-frame-pending {
+  box-sizing: border-box;
+}
+
 .camera-actions {
   display: flex;
   gap: 6px;

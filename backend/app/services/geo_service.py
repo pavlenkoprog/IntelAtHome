@@ -1,5 +1,6 @@
 import csv
 import io
+import ipaddress
 import json
 import logging
 import math
@@ -9,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -664,6 +666,7 @@ def _parse_snapshot_cameras(raw: Any) -> list[dict]:
             category = ""
         preview = str(props.get("preview_url") or "").strip()
         thumb = _snapshot_thumb(preview)
+        stream = _safe_stream_url(str(props.get("stream") or ""))
         camera_id = f"snap-{thumb}" if thumb else f"snap-{lat:.5f}-{lon:.5f}"
         name = ", ".join(part for part in (city, region) if part) or country or "Camera"
         item = {
@@ -679,6 +682,8 @@ def _parse_snapshot_cameras(raw: Any) -> list[dict]:
         }
         if thumb:
             item["image_url"] = preview
+        if stream:
+            item["stream_url"] = stream
         items[camera_id] = item
     return list(items.values())
 
@@ -725,12 +730,53 @@ def _camera_catalog() -> tuple[list[dict], str]:
 
 
 OFFICIAL_CAMERA_SOURCES = {"TfL JamCam", "Caltrans"}
+_HIDDEN_CAMERA_KEYS = {"image_url", "stream_url"}
+
+
+def _safe_stream_url(url: str) -> str:
+    raw = url.strip()
+    if not raw or len(raw) > 2000 or any(char in raw for char in "\r\n\t "):
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return ""
+    host = parsed.hostname
+    if not host or port == 0:
+        return ""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return ""
+    if not ip.is_global:
+        return ""
+    return raw
+
+
+def _stream_media_type(header: str) -> str:
+    value = header.strip()
+    if not value:
+        return "image/jpeg"
+    base = value.split(";", 1)[0].strip().lower()
+    if base in {"image/jpeg", "image/jpg"}:
+        return "image/jpeg"
+    if base in {"image/png", "image/gif", "image/webp"}:
+        return base
+    if base == "multipart/x-mixed-replace":
+        return value
+    return ""
 
 
 def _public_camera(item: dict) -> dict:
-    public = {key: value for key, value in item.items() if key != "image_url"}
-    public["has_frame"] = bool(item.get("image_url"))
-    public["player"] = item.get("source") in OFFICIAL_CAMERA_SOURCES and public["has_frame"]
+    public = {key: value for key, value in item.items() if key not in _HIDDEN_CAMERA_KEYS}
+    image = str(item.get("image_url") or "")
+    public["has_frame"] = any(image.startswith(prefix) for prefix in CAMERA_IMAGE_PREFIXES)
+    public["has_stream"] = bool(_safe_stream_url(str(item.get("stream_url") or "")))
+    official = item.get("source") in OFFICIAL_CAMERA_SOURCES and public["has_frame"]
+    public["player"] = official or public["has_stream"]
     return public
 
 
@@ -775,6 +821,66 @@ def camera_frame(camera_id: str) -> tuple[bytes, str] | None:
     try:
         return _get_bytes(url)
     except httpx.HTTPError:
+        return None
+
+
+def camera_stream_url(camera_id: str) -> str:
+    item = camera_record(camera_id)
+    if not item:
+        return ""
+    return _safe_stream_url(str(item.get("stream_url") or ""))
+
+
+def open_camera_stream(camera_id: str):
+    url = camera_stream_url(camera_id)
+    if not url:
+        return None
+    client = httpx.Client(
+        timeout=httpx.Timeout(8.0, read=20.0),
+        follow_redirects=False,
+        headers={"User-Agent": "PalantirAtHome/0.1 (local globe; cameras)"},
+    )
+    response = None
+    try:
+        current = url
+        for _ in range(3):
+            response = client.send(client.build_request("GET", current), stream=True)
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location") or ""
+                response.close()
+                response = None
+                current = _safe_stream_url(urljoin(current, location))
+                if not current:
+                    client.close()
+                    return None
+                continue
+            break
+        if response is None or response.status_code != 200:
+            if response is not None:
+                response.close()
+            client.close()
+            return None
+        media_type = _stream_media_type(response.headers.get("content-type") or "")
+        if not media_type:
+            response.close()
+            client.close()
+            return None
+
+        def chunks():
+            try:
+                for chunk in response.iter_bytes():
+                    if chunk:
+                        yield chunk
+            finally:
+                response.close()
+                client.close()
+
+        return chunks(), media_type
+    except httpx.HTTPError:
+        log.info("camera stream failed: %s", camera_id)
+        if response is not None:
+            response.close()
+        client.close()
         return None
 
 
