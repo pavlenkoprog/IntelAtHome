@@ -459,7 +459,7 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
                 "kind": "camera",
                 "lat": 42.27,
                 "lon": -83.74,
-                "source": "Public snapshot",
+                "source": "Дамп публичных камер",
                 "city": "Ann Arbor",
                 "country": "United States",
                 "category": "other",
@@ -471,7 +471,7 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
                 "kind": "camera",
                 "lat": 42.28,
                 "lon": -83.75,
-                "source": "Public snapshot",
+                "source": "Дамп публичных камер",
                 "image_url": "http://203.0.113.5/mjpg/video.mjpg",
             },
         ],
@@ -481,7 +481,7 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
     assert data["items"][0]["has_frame"] is True
     assert data["items"][0]["player"] is False
     assert "image_url" not in data["items"][0]
-    assert data["source"] == "Public snapshot"
+    assert data["source"] == "Дамп публичных камер"
     monkeypatch.setattr(
         "app.services.geo_service._get_bytes",
         lambda url, timeout=8.0: (b"jpeg-bytes", "image/jpeg"),

@@ -672,7 +672,7 @@ def _parse_snapshot_cameras(raw: Any) -> list[dict]:
             "kind": "camera",
             "lat": lat,
             "lon": lon,
-            "source": "Public snapshot",
+            "source": "Дамп публичных камер",
             "city": city,
             "country": country,
             "category": category,

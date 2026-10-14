@@ -715,7 +715,7 @@ function renderItems(viewer, source, items, zoom) {
 function cameraEntity(item, zoom) {
   const Cesium = window.Cesium;
   const size = planeSize(zoom);
-  const dump = String(item.id || "").startsWith("snap-") || item.source === "Public snapshot";
+  const dump = String(item.id || "").startsWith("snap-") || item.source === "Дамп публичных камер";
   const css = dump ? COLORS.cameraDump : COLORS.cameraPublic;
   return {
     name: item.name,
