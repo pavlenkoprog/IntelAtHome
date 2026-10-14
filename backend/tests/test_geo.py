@@ -466,11 +466,9 @@ def test_parse_snapshot_cameras_keeps_stream_without_preview() -> None:
     assert live["stream_url"] == "http://173.167.10.225/mjpg/video.mjpg"
     preview = by_id["snap-252977"]
     assert preview["image_url"] == "http://insecam.org/static/thumb/252977.jpg"
-    assert "stream_url" not in preview
-    assert "203.0.113.5" not in json.dumps(preview)
+    assert preview["stream_url"] == "http://203.0.113.5/mjpg/video.mjpg"
     local = by_id["snap-1"]
-    assert "stream_url" not in local
-    assert "127.0.0.1" not in json.dumps(local)
+    assert local["stream_url"] == "http://127.0.0.1/secret"
 
 
 def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
@@ -498,6 +496,7 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
                 "lon": -83.75,
                 "source": "Дамп публичных камер",
                 "image_url": "http://203.0.113.5/mjpg/video.mjpg",
+                "stream_url": "http://203.0.113.5/mjpg/video.mjpg",
             },
             {
                 "id": "snap-live",
@@ -516,11 +515,15 @@ def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
     assert data["items"][0]["has_stream"] is False
     assert data["items"][0]["player"] is False
     assert "image_url" not in data["items"][0]
+    assert "stream_url" not in data["items"][0]
+    blocked = data["items"][1]
+    assert blocked["has_stream"] is False
+    assert blocked["stream_url"] == "http://203.0.113.5/mjpg/video.mjpg"
     live = data["items"][2]
     assert live["has_frame"] is False
     assert live["has_stream"] is True
     assert live["player"] is True
-    assert "stream_url" not in live
+    assert live["stream_url"] == "http://173.167.10.225/mjpg/video.mjpg"
     assert data["source"] == "Дамп публичных камер"
     monkeypatch.setattr(
         "app.services.geo_service._get_bytes",

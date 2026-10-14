@@ -378,6 +378,10 @@ a {
   color: #6cb6ff;
 }
 
+.camera-stream-link {
+  overflow-wrap: anywhere;
+}
+
 .globe-popup-close {
   position: absolute;
   top: 4px;

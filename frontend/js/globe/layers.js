@@ -975,7 +975,22 @@ function popupHtml(item) {
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([label, value]) => `<div><span class="muted">${label}:</span> ${escapeHtml(value)}</div>`)
     .join("");
-  return `${popupTitle(item)}${rows}${cameraFrameHtml(item)}`;
+  return `${popupTitle(item)}${rows}${cameraStreamNote(item)}${cameraFrameHtml(item)}`;
+}
+
+function cameraStreamNote(item) {
+  if (item.kind !== "camera" || isOfficialCamera(item.id)) {
+    return "";
+  }
+  const url = String(item.stream_url || "").trim();
+  const link =
+    url.startsWith("http://") || url.startsWith("https://")
+      ? `<div><a class="camera-stream-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a></div>`
+      : "";
+  if (item.has_stream === true) {
+    return link;
+  }
+  return `<div>Нет стрима</div>${link}`;
 }
 
 function cameraFrameHtml(item) {

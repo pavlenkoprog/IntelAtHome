@@ -666,7 +666,7 @@ def _parse_snapshot_cameras(raw: Any) -> list[dict]:
             category = ""
         preview = str(props.get("preview_url") or "").strip()
         thumb = _snapshot_thumb(preview)
-        stream = _safe_stream_url(str(props.get("stream") or ""))
+        stream = _linkable_stream_url(str(props.get("stream") or ""))
         camera_id = f"snap-{thumb}" if thumb else f"snap-{lat:.5f}-{lon:.5f}"
         name = ", ".join(part for part in (city, region) if part) or country or "Camera"
         item = {
@@ -733,6 +733,20 @@ OFFICIAL_CAMERA_SOURCES = {"TfL JamCam", "Caltrans"}
 _HIDDEN_CAMERA_KEYS = {"image_url", "stream_url"}
 
 
+def _linkable_stream_url(url: str) -> str:
+    raw = url.strip()
+    if not raw or len(raw) > 2000 or any(char.isspace() for char in raw):
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or port == 0:
+        return ""
+    return raw
+
+
 def _safe_stream_url(url: str) -> str:
     raw = url.strip()
     if not raw or len(raw) > 2000 or any(char in raw for char in "\r\n\t "):
@@ -773,8 +787,11 @@ def _stream_media_type(header: str) -> str:
 def _public_camera(item: dict) -> dict:
     public = {key: value for key, value in item.items() if key not in _HIDDEN_CAMERA_KEYS}
     image = str(item.get("image_url") or "")
+    stream = _linkable_stream_url(str(item.get("stream_url") or ""))
     public["has_frame"] = any(image.startswith(prefix) for prefix in CAMERA_IMAGE_PREFIXES)
-    public["has_stream"] = bool(_safe_stream_url(str(item.get("stream_url") or "")))
+    public["has_stream"] = bool(_safe_stream_url(stream))
+    if stream:
+        public["stream_url"] = stream
     official = item.get("source") in OFFICIAL_CAMERA_SOURCES and public["has_frame"]
     public["player"] = official or public["has_stream"]
     return public
