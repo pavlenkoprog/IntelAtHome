@@ -14,6 +14,7 @@ const CAMERA_ICON = "/vendor/leaflet/images/security_camera_negate.png";
 const SATELLITE_ICON = "/vendor/leaflet/images/satellite_negate.png";
 const SATELLITE_SIZE = 20;
 const PLANE_SIZE_BASE = 20;
+const CAMERA_SIZE_BASE = 25;
 
 const COLORS = {
   city: "#f0a202",
@@ -696,6 +697,10 @@ function planeSize(zoom) {
   return Math.max(6, Math.min(32, Math.round(PLANE_SIZE_BASE * 1.2 ** (zoom - 7))));
 }
 
+function cameraSize(zoom) {
+  return Math.max(6, Math.min(32, Math.round(CAMERA_SIZE_BASE * 1.2 ** (zoom - 7))));
+}
+
 function renderItems(viewer, source, items, zoom) {
   source.entities.removeAll();
   for (const item of items) {
@@ -714,7 +719,7 @@ function renderItems(viewer, source, items, zoom) {
 
 function cameraEntity(item, zoom) {
   const Cesium = window.Cesium;
-  const size = planeSize(zoom);
+  const size = cameraSize(zoom);
   const dump = String(item.id || "").startsWith("snap-") || item.source === "Дамп публичных камер";
   const css = dump ? COLORS.cameraDump : COLORS.cameraPublic;
   return {
