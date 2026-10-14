@@ -64,6 +64,10 @@ export function attachRecentImagery(viewer, root) {
 
   panel.close.addEventListener("click", closePanel);
 
+  viewer.scene.canvas.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+  });
+
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction((click) => {
     const picked = viewer.scene.pick(click.position);
@@ -76,7 +80,7 @@ export function attachRecentImagery(viewer, root) {
       return;
     }
     void openAt(latlng.lat, latlng.lon);
-  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+  }, Cesium.ScreenSpaceEventType.RIGHT_CLICK);
 
   async function openAt(lat, lon) {
     const box = boxAround(lat, lon);

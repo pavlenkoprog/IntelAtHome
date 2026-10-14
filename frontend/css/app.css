@@ -68,6 +68,42 @@ a {
   color: var(--muted);
 }
 
+.usage {
+  flex: none;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage h2 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.usage ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.usage li {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.usage span {
+  display: block;
+  color: var(--text);
+}
+
 .media-panel {
   display: flex;
   flex-direction: column;
