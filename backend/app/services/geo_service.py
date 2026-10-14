@@ -1,16 +1,18 @@
 import csv
+import html
 import io
 import ipaddress
 import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import httpx
 
@@ -733,8 +735,20 @@ OFFICIAL_CAMERA_SOURCES = {"TfL JamCam", "Caltrans"}
 _HIDDEN_CAMERA_KEYS = {"image_url", "stream_url"}
 
 
+_YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+    "youtu.be",
+    "www.youtu.be",
+}
+_YOUTUBE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
 def _linkable_stream_url(url: str) -> str:
-    raw = url.strip()
+    raw = html.unescape(html.unescape(url.strip()))
     if not raw or len(raw) > 2000 or any(char.isspace() for char in raw):
         return ""
     try:
@@ -745,6 +759,31 @@ def _linkable_stream_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or port == 0:
         return ""
     return raw
+
+
+def _youtube_embed_url(url: str) -> str:
+    raw = _linkable_stream_url(url)
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").lower()
+    if host not in _YOUTUBE_HOSTS:
+        return ""
+    video_id = ""
+    if host in {"youtu.be", "www.youtu.be"}:
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    else:
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2 and parts[0] in {"embed", "shorts"}:
+            video_id = parts[1]
+        else:
+            for key, value in parse_qsl(parsed.query):
+                if key == "v" and value:
+                    video_id = value
+                    break
+    if not _YOUTUBE_ID.fullmatch(video_id):
+        return ""
+    return f"https://www.youtube-nocookie.com/embed/{video_id}?autoplay=0"
 
 
 def _safe_stream_url(url: str) -> str:
@@ -788,9 +827,13 @@ def _public_camera(item: dict) -> dict:
     public = {key: value for key, value in item.items() if key not in _HIDDEN_CAMERA_KEYS}
     image = str(item.get("image_url") or "")
     stream = _linkable_stream_url(str(item.get("stream_url") or ""))
+    embed = _youtube_embed_url(stream)
     public["has_frame"] = any(image.startswith(prefix) for prefix in CAMERA_IMAGE_PREFIXES)
     public["has_stream"] = bool(_safe_stream_url(stream))
-    if stream:
+    if embed:
+        public["stream_url"] = embed
+        public["embed"] = "youtube"
+    elif stream:
         public["stream_url"] = stream
     official = item.get("source") in OFFICIAL_CAMERA_SOURCES and public["has_frame"]
     public["player"] = official or public["has_stream"]

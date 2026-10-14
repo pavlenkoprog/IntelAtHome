@@ -471,6 +471,33 @@ def test_parse_snapshot_cameras_keeps_stream_without_preview() -> None:
     assert local["stream_url"] == "http://127.0.0.1/secret"
 
 
+def test_youtube_embed_stream_becomes_nocookie_player(monkeypatch) -> None:
+    parsed = _parse_snapshot_cameras(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-115.15, 36.17]},
+                    "properties": {
+                        "stream": "https://www.youtube-nocookie.com/embed/6ILuxieirno?autoplay=0&amp;state=1",
+                        "city": "Las Vegas",
+                    },
+                }
+            ],
+        }
+    )
+    assert parsed[0]["stream_url"] == "https://www.youtube-nocookie.com/embed/6ILuxieirno?autoplay=0&state=1"
+    _STORE.clear()
+    monkeypatch.setattr("app.services.geo_service._snapshot_cameras", lambda: parsed)
+    data = cameras(36, -116, 37, -115, zoom=8)
+    item = data["items"][0]
+    assert item["embed"] == "youtube"
+    assert item["stream_url"] == "https://www.youtube-nocookie.com/embed/6ILuxieirno?autoplay=0"
+    assert item["has_stream"] is False
+    assert item["player"] is False
+
+
 def test_cameras_merge_snapshot_dump(monkeypatch) -> None:
     _STORE.clear()
     monkeypatch.setattr(

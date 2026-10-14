@@ -393,8 +393,20 @@ a {
   cursor: pointer;
 }
 
-.globe-popup:has(.camera-frame) {
+.globe-popup:has(.camera-frame),
+.globe-popup:has(.camera-embed) {
   max-width: 360px;
+}
+
+.camera-embed {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: 180px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0b0f14;
 }
 
 .camera-frame {

@@ -979,7 +979,7 @@ function popupHtml(item) {
 }
 
 function cameraStreamNote(item) {
-  if (item.kind !== "camera" || isOfficialCamera(item.id)) {
+  if (item.kind !== "camera" || isOfficialCamera(item.id) || item.embed === "youtube") {
     return "";
   }
   const url = String(item.stream_url || "").trim();
@@ -1000,10 +1000,14 @@ function cameraFrameHtml(item) {
   const streamed = item.has_stream === true;
   const official = Boolean(item.player) && isOfficialCamera(item.id);
   const preview = item.has_frame === true;
+  const name = escapeHtml(item.name);
+  if (item.embed === "youtube" && item.stream_url) {
+    const src = escapeHtml(item.stream_url);
+    return `<iframe class="camera-embed" src="${src}" title="${name}" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>`;
+  }
   if (!preview && !streamed) {
     return "";
   }
-  const name = escapeHtml(item.name);
   const previewSrc = preview ? escapeHtml(api.geo.cameraFrame(item.id)) : "";
   const streamSrc = streamed ? escapeHtml(api.geo.cameraStream(item.id)) : "";
   let frame = "";
