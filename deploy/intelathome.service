@@ -1,0 +1,16 @@
+[Unit]
+Description=IntelAtHome
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/intelathome/backend
+Environment=DATABASE_URL=sqlite:////opt/intelathome/data/palantir.db
+Environment=DEBUG=false
+ExecStart=/opt/intelathome/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -16,4 +16,4 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new root@78.17.47.114 /usr/local/bin/intelathome-deploy
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new root@78.17.47.114 "if [ -f /opt/intelathome/deploy/update.sh ]; then bash /opt/intelathome/deploy/update.sh; else /usr/local/bin/intelathome-deploy; fi"
