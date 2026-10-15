@@ -859,7 +859,6 @@ function cameraEntity(item, zoom) {
       height: size,
       heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
       verticalOrigin: Cesium.VerticalOrigin.CENTER,
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
   };
 }
