@@ -1,6 +1,6 @@
 export function cameraZoom(viewer) {
-  const height = viewer.camera.positionCartographic.height;
-  return Math.max(0, Math.min(22, Math.log2(35_200_000 / Math.max(height, 1))));
+  const height = viewer.camera.positionCartographic?.height;
+  return Math.max(0, Math.min(22, Math.log2(35_200_000 / Math.max(height || 1, 1))));
 }
 
 export function viewBBox(viewer) {

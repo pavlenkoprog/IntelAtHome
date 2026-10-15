@@ -29,7 +29,12 @@ export function createWeatherView(viewer) {
   };
 
   const bindProject = () => {
-    const occluder = new Cesium.EllipsoidalOccluder(viewer.scene.globe.ellipsoid, viewer.camera.positionWC);
+    const position = viewer.camera.positionWC;
+    if (!position) {
+      project = () => null;
+      return;
+    }
+    const occluder = new Cesium.EllipsoidalOccluder(viewer.scene.globe.ellipsoid, position);
     project = (lat, lon) => {
       const cartesian = Cesium.Cartesian3.fromDegrees(lon, lat);
       if (!occluder.isPointVisible(cartesian)) {
@@ -340,7 +345,13 @@ export function createWeatherView(viewer) {
 
   const viewKey = () => {
     const camera = viewer.camera;
-    return `${camera.positionWC.x | 0}:${camera.positionWC.y | 0}:${camera.positionWC.z | 0}:${camera.heading.toFixed(3)}:${camera.pitch.toFixed(3)}:${canvas.width}x${canvas.height}`;
+    const position = camera.positionWC;
+    if (!position) {
+      return `empty:${viewer.scene.mode}:${canvas.width}x${canvas.height}`;
+    }
+    const heading = Number.isFinite(camera.heading) ? camera.heading.toFixed(3) : "0";
+    const pitch = Number.isFinite(camera.pitch) ? camera.pitch.toFixed(3) : "0";
+    return `${position.x | 0}:${position.y | 0}:${position.z | 0}:${heading}:${pitch}:${viewer.scene.mode}:${canvas.width}x${canvas.height}`;
   };
 
   viewer.scene.postRender.addEventListener(() => {
