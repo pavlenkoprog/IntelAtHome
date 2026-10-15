@@ -36,6 +36,7 @@ ADSB_GLOBE = "https://globe.theairtraffic.com/data/aircraft.json"
 FLIGHT_CAP = 800
 SNAPSHOT_INTERVAL = 600
 SNAPSHOT_DIR = Path(__file__).resolve().parents[3] / "data" / "snapshots"
+CAMERA_DUMP_PATH = Path(__file__).resolve().parents[3] / "catalog" / "cameras_geojson.json"
 NE_PLACES = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson"
 NE_PORTS = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_ports.geojson"
 OPENFLIGHTS = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
@@ -697,7 +698,7 @@ def _snapshot_cameras() -> list[dict]:
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return []
     global _SNAPSHOT_CAMERAS
-    path = SNAPSHOT_DIR / "cameras_geojson.json"
+    path = CAMERA_DUMP_PATH
     try:
         mtime = path.stat().st_mtime
     except OSError:
