@@ -81,10 +81,11 @@ export async function attachLayers(viewer, root) {
 
   const quakes = addSource(viewer, "quakes");
   const events = addSource(viewer, "events");
-  const flights = addSource(viewer, "flights");
   const places = addSource(viewer, "places");
   const storms = addSource(viewer, "storms", false);
   const cameras = addSource(viewer, "cameras");
+  const flightsMilitary = addSource(viewer, "flights-military");
+  const flightsCivil = addSource(viewer, "flights-civil");
   const satMilitary = addSource(viewer, "satellites-military");
   const satRecon = addSource(viewer, "satellites-recon");
 
@@ -94,7 +95,8 @@ export async function attachLayers(viewer, root) {
     places,
     quakes,
     events,
-    flights,
+    flightsMilitary,
+    flightsCivil,
     cameras,
     satMilitary,
     satRecon,
@@ -110,7 +112,7 @@ export async function attachLayers(viewer, root) {
   bindLiveLayer(viewer, quakes, "quakes", () => api.geo.earthquakes(), 600000);
   bindSatelliteLayers(viewer, satMilitary, satRecon);
   bindLiveLayer(viewer, events, "events", () => api.geo.events(), 600000);
-  bindBBoxLayer(viewer, flights, "flights", (bbox) => api.geo.flights(bbox), 600000, 5, 250);
+  bindFlightLayers(viewer, flightsMilitary, flightsCivil);
   bindBBoxLayer(viewer, cameras, "cameras", (bbox) => api.geo.cameras(bbox), 180000, 0, 400);
   bindBBoxLayer(viewer, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
   bindRadarLayer(viewer, rain, clouds);
@@ -194,7 +196,8 @@ function attachLayerControl(root, bases, overlays) {
     ["places", "Объекты OSM"],
     ["quakes", "Землетрясения"],
     ["events", "События NASA"],
-    ["flights", "Самолёты"],
+    ["flightsMilitary", "Самолёты: военные"],
+    ["flightsCivil", "Самолёты: гражданские"],
     ["cameras", "Камеры"],
     ["satMilitary", "Спутники: военные"],
     ["satRecon", "Спутники: гражданские"],
@@ -332,6 +335,129 @@ function bindSatelliteLayers(viewer, military, recon) {
   };
   recon.onHide = () => {
     recon.entities.removeAll();
+    disarm();
+  };
+  arm();
+}
+
+function bindFlightLayers(viewer, military, civil) {
+  const minZoom = 4;
+  const intervalMs = 600000;
+  const debounceMs = 250;
+  let debounce = 0;
+  let requestId = 0;
+  let inflight = false;
+  let pending = null;
+  let retry = 0;
+  let lastOk = 0;
+  const anyOn = () => military.show || civil.show;
+  const refresh = async (reason = "unknown") => {
+    if (!anyOn()) {
+      return;
+    }
+    if (inflight) {
+      pending = reason === "interval" ? pending || reason : reason;
+      return;
+    }
+    const zoom = cameraZoom(viewer);
+    if (zoom < minZoom) {
+      military.entities.removeAll();
+      civil.entities.removeAll();
+      return;
+    }
+    if (reason === "interval" && Date.now() - lastOk < 8000) {
+      return;
+    }
+    const bbox = viewBBox(viewer);
+    const id = ++requestId;
+    inflight = true;
+    try {
+      const data = await api.geo.flights(bbox);
+      if (id !== requestId) {
+        return;
+      }
+      if (data.reason && !(data.items || []).length) {
+        if (reason !== "retry" && retry < 2) {
+          pending = pending || "retry";
+        }
+        return;
+      }
+      retry = 0;
+      const items = data.items || [];
+      const zoomNow = cameraZoom(viewer);
+      if (military.show) {
+        renderItems(
+          viewer,
+          military,
+          items.filter((item) => item.military),
+          zoomNow,
+        );
+      }
+      if (civil.show) {
+        renderItems(
+          viewer,
+          civil,
+          items.filter((item) => !item.military),
+          zoomNow,
+        );
+      }
+      lastOk = Date.now();
+    } catch {
+      /* слой остаётся прежним */
+    } finally {
+      inflight = false;
+      if (pending) {
+        const next = pending;
+        pending = null;
+        if (next === "retry") {
+          retry += 1;
+          window.setTimeout(() => refresh("retry"), 1200);
+        } else {
+          refresh(next);
+        }
+      }
+    }
+  };
+  const schedule = (reason) => {
+    window.clearTimeout(debounce);
+    debounce = window.setTimeout(() => refresh(reason), debounceMs);
+  };
+  const arm = () => {
+    refresh("overlayadd");
+    if (!timers.flights) {
+      timers.flights = window.setInterval(() => refresh("interval"), intervalMs);
+    }
+  };
+  const disarm = () => {
+    if (anyOn()) {
+      return;
+    }
+    if (timers.flights) {
+      window.clearInterval(timers.flights);
+      delete timers.flights;
+    }
+  };
+
+  viewer.camera.moveEnd.addEventListener(() => {
+    if (anyOn()) {
+      schedule("moveend");
+    }
+  });
+  if (viewer.scene.morphComplete) {
+    viewer.scene.morphComplete.addEventListener(() => {
+      if (anyOn()) {
+        schedule("morph");
+      }
+    });
+  }
+  military.onShow = arm;
+  civil.onShow = arm;
+  military.onHide = () => {
+    military.entities.removeAll();
+    disarm();
+  };
+  civil.onHide = () => {
+    civil.entities.removeAll();
     disarm();
   };
   arm();
