@@ -12,9 +12,12 @@ const OSM_TILES = "https://tile.openstreetmap.org/";
 const PLANE_ICON = "/vendor/leaflet/images/plane_w.png";
 const CAMERA_ICON = "/vendor/leaflet/images/security_camera_negate.png";
 const SATELLITE_ICON = "/vendor/leaflet/images/satellite_negate.png";
+const RADIO_ICON = "/vendor/leaflet/images/antenna_tower_negate.png";
 const SATELLITE_SIZE = 20;
 const PLANE_SIZE_BASE = 20;
 const CAMERA_SIZE_BASE = 25;
+const RADIO_SIZE = 23;
+const FLIGHT_ALTITUDE = 9000;
 
 const COLORS = {
   city: "#f0a202",
@@ -133,8 +136,8 @@ export async function attachLayers(viewer, root) {
   bindLiveLayer(viewer, events, "events", () => api.geo.events(), 600000);
   bindFlightLayers(viewer, flightsMilitary, flightsCivil);
   bindBBoxLayer(viewer, cameras, "cameras", (bbox) => api.geo.cameras(bbox), 180000, 0, 400);
-  bindCatalogLayer(ndb, () => api.geo.ndb());
-  bindCatalogLayer(repeaters, () => api.geo.repeaters());
+  bindCatalogLayer(viewer, ndb, () => api.geo.ndb());
+  bindCatalogLayer(viewer, repeaters, () => api.geo.repeaters());
   bindBBoxLayer(viewer, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
   bindRadarLayer(viewer, rain, clouds);
   bindWeatherField(viewer, overlays);
@@ -282,56 +285,125 @@ function setOverlayShow(overlay, show) {
   }
 }
 
-function bindCatalogLayer(source, loader) {
+function bindCatalogLayer(viewer, source, loader) {
+  const minZoom = 4;
+  let debounce = 0;
+  let catalog = null;
+  let loading = false;
+
   const refresh = async () => {
     if (!source.show) {
       return;
     }
-    try {
-      const data = await loader();
-      if (!source.show) {
+    const zoom = cameraZoom(viewer);
+    if (zoom < minZoom) {
+      source.entities.removeAll();
+      return;
+    }
+    if (!catalog) {
+      if (loading) {
         return;
       }
-      renderRadio(source, data.items || []);
-    } catch {
-      /* слой остаётся прежним */
+      loading = true;
+      try {
+        const data = await loader();
+        catalog = data.items || [];
+      } catch {
+        return;
+      } finally {
+        loading = false;
+      }
+      if (!source.show || cameraZoom(viewer) < minZoom) {
+        return;
+      }
     }
+    const bbox = viewBBox(viewer);
+    renderRadio(
+      source,
+      catalog.filter((item) => inView(item, bbox)),
+      radioSize(cameraZoom(viewer)),
+    );
   };
+
+  const schedule = () => {
+    window.clearTimeout(debounce);
+    debounce = window.setTimeout(refresh, 250);
+  };
+
   source.onShow = refresh;
   source.onHide = () => {
     source.entities.removeAll();
   };
+  viewer.camera.moveEnd.addEventListener(() => {
+    if (source.show) {
+      schedule();
+    }
+  });
+  if (viewer.scene.morphComplete) {
+    viewer.scene.morphComplete.addEventListener(() => {
+      if (source.show) {
+        schedule();
+      }
+    });
+  }
   refresh();
 }
 
-function renderRadio(source, items) {
+function inView(item, bbox) {
+  const lat = Number(item.lat);
+  const lon = Number(item.lon);
+  const south = Number(bbox.south);
+  const north = Number(bbox.north);
+  const west = Number(bbox.west);
+  const east = Number(bbox.east);
+  if (![lat, lon, south, north, west, east].every(Number.isFinite)) {
+    return false;
+  }
+  if (lat < south || lat > north) {
+    return false;
+  }
+  if (west <= east) {
+    return lon >= west && lon <= east;
+  }
+  return lon >= west || lon <= east;
+}
+
+function radioSize(zoom) {
+  return Math.max(6, Math.min(32, Math.round(RADIO_SIZE * 1.2 ** (zoom - 7))));
+}
+
+function renderRadio(source, items, size) {
   source.entities.removeAll();
   for (const item of items) {
     if (item.kind !== "ndb" && item.kind !== "repeater") {
       continue;
     }
-    source.entities.add(radioEntity(item));
+    source.entities.add(radioEntity(item, size));
   }
 }
 
-function radioEntity(item) {
+function radioEntity(item, size = RADIO_SIZE) {
   const Cesium = window.Cesium;
-  const inactive = item.kind === "ndb" && item.active === false;
-  const color = inactive ? COLORS.ndbInactive : COLORS[item.kind];
   return {
     name: item.name,
     description: radioPopup(item),
     position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 40),
-    point: {
-      pixelSize: inactive ? 4 : 6,
-      color: Cesium.Color.fromCssColorString(color),
-      outlineColor: Cesium.Color.BLACK.withAlpha(0.65),
-      outlineWidth: 1,
+    billboard: {
+      image: RADIO_ICON,
+      color: Cesium.Color.fromCssColorString(radioColor(item)),
+      width: size,
+      height: size,
       heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      scaleByDistance: new Cesium.NearFarScalar(2.0e5, 1.15, 1.6e7, 0.4),
+      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
     },
   };
+}
+
+function radioColor(item) {
+  if (item.kind === "ndb" && item.active === false) {
+    return COLORS.ndbInactive;
+  }
+  return COLORS[item.kind] || COLORS.ndb;
 }
 
 function radioText(value) {
@@ -1217,7 +1289,7 @@ function planeEntity(viewer, item, zoom) {
   const size = planeSize(zoom);
   const css = item.military ? COLORS.satelliteMilitary : COLORS.satelliteRecon;
   const alt = Number(item.altitude);
-  const meters = Number.isFinite(alt) && alt > 0 ? (alt > 20000 ? alt * 0.3048 : alt) : 9000;
+  const meters = Number.isFinite(alt) && alt > 0 ? (alt > 20000 ? alt * 0.3048 : alt) : FLIGHT_ALTITUDE;
   const position = Cesium.Cartesian3.fromDegrees(item.lon, item.lat, meters);
   return {
     name: item.name,
