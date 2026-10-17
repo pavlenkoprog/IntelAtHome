@@ -37,6 +37,8 @@ FLIGHT_CAP = 800
 SNAPSHOT_INTERVAL = 600
 SNAPSHOT_DIR = Path(__file__).resolve().parents[3] / "data" / "snapshots"
 CAMERA_DUMP_PATH = Path(__file__).resolve().parents[3] / "catalog" / "cameras_geojson.json"
+NDB_PATH = Path(__file__).resolve().parents[3] / "catalog" / "ndb.json"
+REPEATER_PATH = Path(__file__).resolve().parents[3] / "catalog" / "openrepeater-json-2026-10-17.json"
 NE_PLACES = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson"
 NE_PORTS = "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_ports.geojson"
 OPENFLIGHTS = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
@@ -1425,3 +1427,134 @@ def imagery_meta(lat: float, lon: float, zoom: int) -> dict:
         }
 
     return _cached(key, 600, load)
+
+
+_CATALOG_JSON: dict[str, tuple[float, Any]] = {}
+
+
+def _catalog_json(path: Path) -> Any | None:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _CATALOG_JSON.get(str(path))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.info("catalog unreadable %s: %s", path.name, exc)
+        return None
+    _CATALOG_JSON[str(path)] = (mtime, raw)
+    return raw
+
+
+def _finite_coord(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _present(item: dict) -> dict:
+    return {key: value for key, value in item.items() if value is not None and value != ""}
+
+
+def _public_link(url: Any) -> str:
+    raw = str(url or "").strip()
+    if not raw or len(raw) > 500 or any(char.isspace() for char in raw):
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return raw
+
+
+def ndb_beacons() -> dict:
+    raw = _catalog_json(NDB_PATH)
+    if not isinstance(raw, dict):
+        return {"items": [], "source": "REU NDB List", "reason": "missing"}
+    items = []
+    for row in raw.get("beacons") or []:
+        if not isinstance(row, dict):
+            continue
+        lat = _finite_coord(row.get("lat"))
+        lon = _finite_coord(row.get("lon"))
+        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        callsign = str(row.get("callsign") or "UNID")
+        frequency = row.get("frequency_khz")
+        items.append(
+            _present(
+                {
+                    "id": str(row.get("id") or f"{frequency}-{callsign}"),
+                    "kind": "ndb",
+                    "name": f"{callsign} {frequency} kHz",
+                    "callsign": callsign,
+                    "lat": lat,
+                    "lon": lon,
+                    "frequency_khz": frequency,
+                    "active": bool(row.get("active")),
+                    "place": row.get("name") or "",
+                    "state": row.get("state") or "",
+                    "itu": row.get("itu") or "",
+                    "region": row.get("region") or "",
+                    "gsq": row.get("gsq") or "",
+                    "power_w": row.get("power_w"),
+                    "ident": row.get("ident") or "",
+                    "format": row.get("format") or "",
+                    "lsb": row.get("lsb") or "",
+                    "usb": row.get("usb") or "",
+                    "notes": row.get("notes") or "",
+                    "source": "REU NDB List",
+                }
+            )
+        )
+    return {"items": items, "source": str(raw.get("source") or "REU NDB List")}
+
+
+def amateur_repeaters() -> dict:
+    raw = _catalog_json(REPEATER_PATH)
+    if not isinstance(raw, dict):
+        return {"items": [], "source": "Open Repeater", "reason": "missing"}
+    items = []
+    for row in raw.get("repeaters") or []:
+        if not isinstance(row, dict):
+            continue
+        lat = _finite_coord(row.get("lat"))
+        lon = _finite_coord(row.get("lng"))
+        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        callsign = str(row.get("callsign") or "").strip()
+        frequency = row.get("frequency")
+        items.append(
+            _present(
+                {
+                    "id": str(row.get("id") or f"{callsign}-{frequency}"),
+                    "kind": "repeater",
+                    "name": callsign or str(row.get("city") or "ретранслятор"),
+                    "callsign": callsign,
+                    "lat": lat,
+                    "lon": lon,
+                    "frequency_mhz": frequency,
+                    "offset": row.get("offset"),
+                    "ctcss": row.get("ctcss"),
+                    "dcs": row.get("dcs"),
+                    "mode": row.get("mode") or "",
+                    "band": row.get("band") or "",
+                    "country": row.get("country") or "",
+                    "city": row.get("city") or "",
+                    "coverage_km": row.get("coverage_km"),
+                    "owner": row.get("owner") or "",
+                    "status": row.get("status") or "",
+                    "website": _public_link(row.get("website")),
+                    "source": "Open Repeater",
+                }
+            )
+        )
+    return {"items": items, "source": str(raw.get("source") or "Open Repeater")}

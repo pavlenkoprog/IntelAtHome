@@ -107,6 +107,16 @@ def get_camera_stream(camera_id: str) -> StreamingResponse:
     )
 
 
+@router.get("/ndb")
+def get_ndb() -> dict:
+    return geo_service.ndb_beacons()
+
+
+@router.get("/repeaters")
+def get_repeaters() -> dict:
+    return geo_service.amateur_repeaters()
+
+
 @router.get("/satellites")
 def get_satellites() -> dict:
     return geo_service.satellites()

@@ -31,6 +31,9 @@ const COLORS = {
   cameraDump: "#f97316",
   satelliteMilitary: "#f97316",
   satelliteRecon: "#38bdf8",
+  ndb: "#f5c542",
+  ndbInactive: "#94a3b8",
+  repeater: "#4ade80",
 };
 
 const EVENT_COLORS = {
@@ -58,6 +61,18 @@ const KIND_LABELS = {
   earthquake: "землетрясение",
   event: "событие NASA",
   camera: "онлайн-камера",
+  ndb: "NDB-маяк",
+  repeater: "любительский ретранслятор",
+};
+
+const REGION_LABELS = {
+  eu: "Европа",
+  as: "Азия",
+  af: "Африка",
+  na: "Северная Америка",
+  sa: "Южная Америка",
+  ca: "Центральная Америка",
+  oc: "Океания",
 };
 
 const timers = {};
@@ -84,6 +99,8 @@ export async function attachLayers(viewer, root) {
   const places = addSource(viewer, "places");
   const storms = addSource(viewer, "storms", false);
   const cameras = addSource(viewer, "cameras");
+  const ndb = addSource(viewer, "ndb");
+  const repeaters = addSource(viewer, "repeaters");
   const flightsMilitary = addSource(viewer, "flights-military");
   const flightsCivil = addSource(viewer, "flights-civil");
   const satMilitary = addSource(viewer, "satellites-military");
@@ -98,6 +115,8 @@ export async function attachLayers(viewer, root) {
     flightsMilitary,
     flightsCivil,
     cameras,
+    ndb,
+    repeaters,
     satMilitary,
     satRecon,
     rain,
@@ -114,6 +133,8 @@ export async function attachLayers(viewer, root) {
   bindLiveLayer(viewer, events, "events", () => api.geo.events(), 600000);
   bindFlightLayers(viewer, flightsMilitary, flightsCivil);
   bindBBoxLayer(viewer, cameras, "cameras", (bbox) => api.geo.cameras(bbox), 180000, 0, 400);
+  bindCatalogLayer(ndb, () => api.geo.ndb());
+  bindCatalogLayer(repeaters, () => api.geo.repeaters());
   bindBBoxLayer(viewer, places, "places", (bbox) => api.geo.places(bbox), 600000, 4);
   bindRadarLayer(viewer, rain, clouds);
   bindWeatherField(viewer, overlays);
@@ -199,6 +220,8 @@ function attachLayerControl(root, bases, overlays) {
     ["flightsMilitary", "Самолёты: военные"],
     ["flightsCivil", "Самолёты: гражданские"],
     ["cameras", "Камеры"],
+    ["ndb", "NDB-маяки"],
+    ["repeaters", "Ретрансляторы"],
     ["satMilitary", "Спутники: военные"],
     ["satRecon", "Спутники: гражданские"],
     ["rain", "Осадки"],
@@ -257,6 +280,144 @@ function setOverlayShow(overlay, show) {
   if (overlay.layer) {
     overlay.layer.show = show;
   }
+}
+
+function bindCatalogLayer(source, loader) {
+  const refresh = async () => {
+    if (!source.show) {
+      return;
+    }
+    try {
+      const data = await loader();
+      if (!source.show) {
+        return;
+      }
+      renderRadio(source, data.items || []);
+    } catch {
+      /* слой остаётся прежним */
+    }
+  };
+  source.onShow = refresh;
+  source.onHide = () => {
+    source.entities.removeAll();
+  };
+  refresh();
+}
+
+function renderRadio(source, items) {
+  source.entities.removeAll();
+  for (const item of items) {
+    if (item.kind !== "ndb" && item.kind !== "repeater") {
+      continue;
+    }
+    source.entities.add(radioEntity(item));
+  }
+}
+
+function radioEntity(item) {
+  const Cesium = window.Cesium;
+  const inactive = item.kind === "ndb" && item.active === false;
+  const color = inactive ? COLORS.ndbInactive : COLORS[item.kind];
+  return {
+    name: item.name,
+    description: radioPopup(item),
+    position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 40),
+    point: {
+      pixelSize: inactive ? 4 : 6,
+      color: Cesium.Color.fromCssColorString(color),
+      outlineColor: Cesium.Color.BLACK.withAlpha(0.65),
+      outlineWidth: 1,
+      heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      scaleByDistance: new Cesium.NearFarScalar(2.0e5, 1.15, 1.6e7, 0.4),
+    },
+  };
+}
+
+function radioText(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  return escapeHtml(value);
+}
+
+function radioPopup(item) {
+  const rows = (item.kind === "ndb" ? ndbRows(item) : repeaterRows(item))
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => `<div><span class="muted">${label}:</span> ${value}</div>`)
+    .join("");
+  const source = item.source ? `<div class="muted">${escapeHtml(item.source)}</div>` : "";
+  return `<strong>${escapeHtml(item.name)}</strong>${rows}${source}`;
+}
+
+function ndbRows(item) {
+  const power = Number(item.power_w);
+  return [
+    ["Класс", "NDB"],
+    ["Позывной", radioText(item.callsign)],
+    ["Частота", item.frequency_khz != null ? `${radioText(item.frequency_khz)} кГц` : ""],
+    ["Статус", item.active === false ? "неактивен" : "активен"],
+    ["Место", radioText(item.place)],
+    ["Штат", radioText(item.state)],
+    ["ITU", radioText(item.itu)],
+    ["Часть света", regionLabel(item.region)],
+    ["Локатор", radioText(item.gsq)],
+    ["Мощность", Number.isFinite(power) ? `${radioText(power)} Вт` : ""],
+    ["Формат", radioText(item.format)],
+    ["Цикл", radioText(item.ident)],
+    ["LSB", radioText(item.lsb)],
+    ["USB", radioText(item.usb)],
+    ["Примечание", radioText(item.notes)],
+  ];
+}
+
+function repeaterRows(item) {
+  const coverage = Number(item.coverage_km);
+  return [
+    ["Класс", "любительский ретранслятор"],
+    ["Позывной", radioText(item.callsign)],
+    ["Частота", item.frequency_mhz != null ? `${radioText(item.frequency_mhz)} МГц` : ""],
+    ["Сдвиг", offsetLabel(item.offset)],
+    ["CTCSS", item.ctcss != null && item.ctcss !== "" ? `${radioText(item.ctcss)} Гц` : ""],
+    ["DCS", radioText(item.dcs)],
+    ["Режим", radioText(item.mode)],
+    ["Диапазон", radioText(item.band)],
+    ["Страна", radioText(item.country)],
+    ["Город", radioText(item.city)],
+    ["Покрытие", Number.isFinite(coverage) && item.coverage_km != null ? `${radioText(coverage)} км` : ""],
+    ["Владелец", radioText(item.owner)],
+    ["Статус", item.status === "active" ? "активен" : radioText(item.status)],
+    ["Сайт", linkHtml(item.website)],
+  ];
+}
+
+function regionLabel(code) {
+  const key = String(code || "").toLowerCase();
+  if (!key) {
+    return "";
+  }
+  return escapeHtml(REGION_LABELS[key] || code);
+}
+
+function offsetLabel(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "";
+  }
+  const sign = number > 0 ? "+" : "";
+  return escapeHtml(`${sign}${number}`);
+}
+
+function linkHtml(url) {
+  const raw = String(url || "");
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    return "";
+  }
+  const href = escapeHtml(raw);
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>`;
 }
 
 function bindLiveLayer(viewer, source, key, loader, intervalMs) {

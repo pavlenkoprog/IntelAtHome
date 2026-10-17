@@ -15,7 +15,9 @@ from app.services.geo_service import (
     _spread_flights,
     camera_frame,
     camera_stream_url,
+    amateur_repeaters,
     cameras,
+    ndb_beacons,
     open_camera_stream,
     flights,
     places,
@@ -791,3 +793,37 @@ def test_satellite_snapshot_is_written(tmp_path, monkeypatch) -> None:
     assert saved["source"] == "CelesTrak"
     assert saved["items"][0]["name"] == "SAR-LUPE 2"
     assert "updated" in saved
+
+
+def test_ndb_and_repeaters_stay_separate_classes() -> None:
+    ndb = ndb_beacons()
+    repeaters = amateur_repeaters()
+
+    assert ndb["source"] == "REU NDB List"
+    assert repeaters["source"] == "Open Repeater"
+    assert len(ndb["items"]) == 4947
+    assert len(repeaters["items"]) == 338
+    assert {item["kind"] for item in ndb["items"]} == {"ndb"}
+    assert {item["kind"] for item in repeaters["items"]} == {"repeater"}
+
+    staraya = next(item for item in ndb["items"] if item["id"] == "191-I-0")
+    assert staraya["callsign"] == "I"
+    assert staraya["frequency_khz"] == 191
+    assert staraya["place"] == "Staraya Russa"
+    assert staraya["itu"] == "RUS"
+    assert staraya["lat"] == 57.9792
+    assert staraya["lon"] == 31.375
+    assert staraya["active"] is True
+    assert any(item["active"] is False for item in ndb["items"])
+
+    repeater_ids = {item["id"] for item in repeaters["items"]}
+    assert "e665c63a-c276-4ae6-91d0-364b657f3589" not in repeater_ids
+    denver = next(item for item in repeaters["items"] if item["callsign"] == "W0SKY")
+    assert denver["frequency_mhz"] == 927.975
+    assert denver["mode"] == "FM (analog)"
+    assert denver["city"] == "Denver"
+    assert denver["website"] == "https://skyhublink.com"
+    assert all(
+        -90 <= item["lat"] <= 90 and -180 <= item["lon"] <= 180
+        for item in (*ndb["items"], *repeaters["items"])
+    )
